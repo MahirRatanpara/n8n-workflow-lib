@@ -1,0 +1,1477 @@
+{
+  "name": "Linkedin Job Search v2",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "id": "72480ada-c4d4-419a-8b52-af56b5cdfaba",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        -2256,
+        160
+      ],
+      "notesInFlow": false,
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "1Dw_hTBr9n_Ieca_P7OMngCFnGgotu9Uf",
+          "mode": "list",
+          "cachedResultName": "Mahir_Resume.pdf",
+          "cachedResultUrl": "https://drive.google.com/file/d/1Dw_hTBr9n_Ieca_P7OMngCFnGgotu9Uf/view?usp=drivesdk"
+        },
+        "options": {}
+      },
+      "id": "60e13639-8d02-4b00-ad10-2c3e301426d5",
+      "name": "Download file",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [
+        -2016,
+        160
+      ],
+      "typeVersion": 3,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "2SF7ob7VCnwgbeRC",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "id": "e3795b2e-eba9-401c-8938-7ec75ed93480",
+      "name": "Extract from File",
+      "type": "n8n-nodes-base.extractFromFile",
+      "position": [
+        -1648,
+        160
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SETTINGS — Change these before manual runs if needed\n// ============================================================\nconst TIME_WINDOW_SECONDS = 21600;  // Default 24h, \n// Clear custom time after reading so scheduled runs use default\nconst LOCATION = 'India';           // Search location\nconst GEO_ID = '102713980';         // India geoId\nconst LOCATION_FILTER = '105214831'; // Bengaluru, Karnataka f_PP filter\n// ============================================================\n\nconst config =  $input.all().map(i => i.json) || [];\n// Define keyword templates per bucket\nconst bucketKeywords = {\n  '1': '\"software development engineer\" OR \"SDE\" OR \"SDE II\" OR \"SDE 2\" OR \"SDE-II\" OR \"software engineer II\" OR \"Software Engineer-2\" OR \"software engineer 2\" OR \"software engineer - II\"',\n  '2': '\"software engineer III\" OR \"software engineer 3\" OR \"software developer 3\"',\n  '3': '\"software engineer\" OR \"software developer\" OR \"backend engineer\" OR \"SDE\" OR \"MTS\" OR \"member of technical staff\"',\n  '4': '\"software engineer\" OR \"software developer\" OR \"backend engineer\" OR \"SDE\" OR \"MTS\" OR \"member of technical staff\"'\n};\n\n// Group active companies by bucket\nconst buckets = {};\nfor (const item of config) {\n  const isActive = String(item.Active).toUpperCase() === 'TRUE' || item.Active === true;\n  if (!isActive) continue;\n  \n  const bucket = String(item.Bucket);\n  if (!buckets[bucket]) buckets[bucket] = [];\n  buckets[bucket].push(String(item.CompanyID));\n}\n\n// Build LinkedIn search URLs\nconst urls = [];\nfor (const [bucket, companyIds] of Object.entries(buckets)) {\n  const keywords = bucketKeywords[bucket];\n    console.log(\"bucket: \" + bucket);\n\n  if (!keywords || companyIds.length === 0) continue;\n  \n  const encodedKeywords = encodeURIComponent(keywords);\n  const companyFilter = companyIds.join(',');\n  const encodedLocation = encodeURIComponent(LOCATION);\n  \n  const url = `https://www.linkedin.com/jobs/search/?keywords=${encodedKeywords}&f_C=${companyFilter}&f_TPR=r${TIME_WINDOW_SECONDS}&location=${encodedLocation}&geoId=${GEO_ID}&f_PP=${LOCATION_FILTER}&sortBy=DD`;\n\n  \n  urls.push({\n    url: url,\n    bucket: bucket,\n    companyCount: companyIds.length\n  });\n}\n\nconsole.log(`Built ${urls.length} search URLs for ${Object.keys(buckets).length} active buckets`);\n\nif (urls.length === 0) {\n  return [{json: {url: '', bucket: '0', companyCount: 0, noUrls: true}}];\n}\n\nreturn urls.map(u => ({json: u}));"
+      },
+      "id": "a0944cb9-3229-4a90-aa9e-1c24d929d06a",
+      "name": "Create search URL",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -960,
+        160
+      ],
+      "typeVersion": 2,
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "id": "d91a4ea9-7075-41f0-9e4d-86b7942dfc71",
+      "name": "Fetch Jobs from Linkedin",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        -768,
+        160
+      ],
+      "typeVersion": 4.2,
+      "retryOnFail": true,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "links",
+              "cssSelector": "ul.jobs-search__results-list li div a[class*=\"base-card\"]",
+              "returnValue": "attribute",
+              "attribute": "href",
+              "returnArray": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4ca513cd-99f8-4988-ac93-1174f6dceb4b",
+      "name": "Extract Job Links",
+      "type": "n8n-nodes-base.html",
+      "position": [
+        -592,
+        160
+      ],
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "links",
+        "options": {}
+      },
+      "id": "ca6b5f2e-4f7f-41a9-8bac-2fa1173716ab",
+      "name": "Split Out",
+      "type": "n8n-nodes-base.splitOut",
+      "position": [
+        -384,
+        160
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reset accumulator at the start of each execution\nconst staticData = $getWorkflowStaticData('global');\nstaticData.newJobs = [];\nstaticData.scoredJobs = [];\nreturn $input.all();"
+      },
+      "id": "38d5844c-3024-4484-992e-20178f45b3bd",
+      "name": "Init Accumulator",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -192,
+        144
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "65e81797-f2a8-499e-9b85-de31e2c0c978",
+      "name": "Loop Over Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "position": [
+        0,
+        0
+      ],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "amount": 20
+      },
+      "id": "5663afba-72f0-44b4-bb8c-cebca851d7c0",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "position": [
+        208,
+        16
+      ],
+      "webhookId": "c9cb4878-ae4d-4b8e-bd37-5395011f7761",
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.links }}",
+        "options": {}
+      },
+      "id": "9e6561d9-4ea2-4879-a38a-fe96e11c23ee",
+      "name": "Fetch Job Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        400,
+        16
+      ],
+      "executeOnce": false,
+      "retryOnFail": true,
+      "typeVersion": 4.2,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "title",
+              "cssSelector": "div h1"
+            },
+            {
+              "key": "company",
+              "cssSelector": "div span a"
+            },
+            {
+              "key": "location",
+              "cssSelector": "div span[class*='topcard__flavor topcard__flavor--bullet']"
+            },
+            {
+              "key": "description",
+              "cssSelector": "div.description__text.description__text--rich"
+            },
+            {
+              "key": "jobid",
+              "cssSelector": "a[data-item-type='semaphore']",
+              "returnValue": "attribute",
+              "attribute": "data-semaphore-content-urn"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7d881033-0b60-4fe8-9ff9-dd01aba2964d",
+      "name": "Parse Job Attributes",
+      "type": "n8n-nodes-base.html",
+      "position": [
+        592,
+        16
+      ],
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "784ead57-9d83-4e08-b83c-23fa165bf045",
+              "name": "description",
+              "type": "string",
+              "value": "={{ $json.description.replaceAll(/\\s+/g, \" \") }}"
+            },
+            {
+              "id": "fd3c9d2c-5ff9-46a7-b70a-f990fbc7da9d",
+              "name": "jobid",
+              "type": "string",
+              "value": "={{ $json.jobid.split(\":\").last() }}"
+            },
+            {
+              "id": "27a20cd2-ab0d-42b7-9cee-ea64e0e26ea3",
+              "name": "applyLink",
+              "type": "string",
+              "value": "={{ \"https://www.linkedin.com/jobs/view/\"+ $json.jobid.split(\":\").last() }} "
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "209232f6-8392-49e9-b32c-d4f68dc0c8da",
+      "name": "Modify Job Attributes",
+      "type": "n8n-nodes-base.set",
+      "position": [
+        800,
+        16
+      ],
+      "typeVersion": 3.4
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo",
+          "mode": "list",
+          "cachedResultName": "n8n - Switch",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Result",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "jobid",
+              "lookupValue": "={{ $json.jobid }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        992,
+        16
+      ],
+      "id": "bd22b3d4-38e9-411c-be12-0ef9b00eae38",
+      "name": "Get row(s) in sheet",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "91ad8404-af27-499b-8520-d1884ee0de73",
+              "leftValue": "={{ $json.jobid === undefined}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1200,
+        48
+      ],
+      "id": "794ce95b-04a4-4e64-aec6-7f2befb4f12f",
+      "name": "If New Job",
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store new job data for batch AI scoring later\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.newJobs) staticData.newJobs = [];\n\nconst jobData = $('Modify Job Attributes').item.json;\n\nstaticData.newJobs.push({\n  title: jobData.title || '',\n  company: jobData.company || '',\n  location: jobData.location || '',\n  description: jobData.description || '',\n  jobid: jobData.jobid || '',\n  applyLink: (jobData.applyLink || '').trim()\n});\n\nreturn $input.all();"
+      },
+      "id": "baa9fd31-08cd-47c1-9405-b0f8dbda7947",
+      "name": "Accumulate Raw Job",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1392,
+        0
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// BUILD BATCH PROMPT\nconst staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.newJobs || [];\n\nif (jobs.length === 0) {\n  return [{ json: { hasJobs: false } }];\n}\n\nconst resume = $('Extract from File').first().json.text || '';\nconst MAX_DESC = 1500;\n\nconst jobSections = jobs.map(job => {\n  const desc = (job.description || '').substring(0, MAX_DESC);\n  return `---JOB [id: ${job.jobid}]---\\nTitle: ${job.title}\\nCompany: ${job.company}\\nLocation: ${job.location}\\nDescription:\\n${desc}\\n---END JOB---`;\n}).join('\\n\\n');\n\nconst prompt = `You are a world-class technical recruiting analyst with deep expertise in software engineering hiring. Your task is to produce rigorous, calibrated match scores between a candidate's resume and multiple job descriptions in a single pass.\n\n## SCORING PHILOSOPHY\n- Be brutally honest. A score of 50 means \"coin flip\".\n- Reserve 85+ for near-perfect matches.\n- A score below 40 means significant gaps exist.\n- Score each job INDEPENDENTLY.\n\n## CANDIDATE RESUME\n${resume}\n\n## JOB POSTINGS TO EVALUATE (${jobs.length} job${jobs.length > 1 ? 's' : ''})\nScore EACH of the following job postings against the resume above.\n\n${jobSections}\n\n## RESPONSE FORMAT\nRespond with ONLY a valid JSON array — no markdown fences, no preamble, no trailing text. I just want the jobid and the score, NOTHING ELSE.\n\n[\\n  {\"jobid\": \"<exact id from above>\", \"score\": <total 0-100>},\\n  ...\\n]\\n\\nIMPORTANT: You MUST return an entry for EVERY job listed above. Do not skip any.`;\n\nreturn [{ json: { hasJobs: true, aiPrompt: prompt } }];"
+      },
+      "id": "aff2c5e8-0723-4bdb-8b75-ec9bd5c2430c",
+      "name": "Build Batch Prompt",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        0,
+        352
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b1b1b1b1-1111-4aaa-bbbb-cccccccccccc",
+              "leftValue": "={{ $json.hasJobs }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        240,
+        352
+      ],
+      "id": "57c1d9f8-30cf-4e8f-86e0-b18c449914b5",
+      "name": "Has New Jobs?"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.aiPrompt }}"
+      },
+      "id": "67e3fabb-1242-487d-8775-2a7a169794ae",
+      "name": "Score All Jobs (AI)",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        496,
+        304
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 5,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "f33b30df-2a78-4808-a6fa-dd13191670e0",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        496,
+        512
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 5,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "uMArafjKFXzel0Ev",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// PARSE ALL SCORES\nconst staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.newJobs || [];\n\n// Parse AI response\nlet scores = {};\ntry {\n  const aiText = typeof $json.text === 'string' ? $json.text : (typeof $json.content === 'string' ? $json.content : '');\n\n  const cleaned = aiText\n    .replace(/```json\\n?/g, '')\n    .replace(/```/g, '')\n    .trim();\n\n  const parsed = JSON.parse(cleaned);\n  if (Array.isArray(parsed)) {\n    parsed.forEach(s => {\n      scores[String(s.jobid)] = s;\n    });\n  }\n} catch (err) {\n  // If parsing fails, all jobs get score null\n}\n\n// Merge scores with job data — output one item per job\nconst scoredJobs = jobs.map(job => {\n  const s = scores[String(job.jobid)] || {};\n  return {\n    json: {\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description,\n      jobid: job.jobid,\n      applyLink: job.applyLink,\n      score: s.score != null ? s.score : null,\n      scoreSummary: \"\"\n    }\n  };\n});\n\n// Store for telegram formatting later\nstaticData.scoredJobs = scoredJobs.map(j => ({ ...j.json }));\n\nreturn scoredJobs;"
+      },
+      "id": "8dbc6a5e-2a59-4e22-84b5-362ac7b399e1",
+      "name": "Parse All Scores",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        832,
+        304
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo",
+          "mode": "list",
+          "cachedResultName": "n8n - Switch",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Result",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "title": "={{ $json.title }}",
+            "company": "={{ $json.company }}",
+            "location": "={{ $json.location }}",
+            "description": "={{ $json.description }}",
+            "jobid": "={{ $json.jobid }}",
+            "applyLink": "={{ $json.applyLink }}",
+            "score": "={{ $json.score }}"
+          },
+          "matchingColumns": [
+            "jobid"
+          ],
+          "schema": [
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "jobid",
+              "displayName": "jobid",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "applyLink",
+              "displayName": "applyLink",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "fa184668-dcc7-4a7e-91e0-d52527bb8947",
+      "name": "Save All to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        992,
+        304
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.scoredJobs || [];\n\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('en-IN', {\n  month: 'short', day: 'numeric',\n  hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'\n});\n\njobs.sort((a, b) => {\n  const scoreA = a.score != null ? a.score : -1;\n  const scoreB = b.score != null ? b.score : -1;\n  return scoreB - scoreA;\n});\n\nlet header = `\\u{1F3AF} *LinkedIn Job Scan*\\n`;\nheader += `\\u{1F4C5} ${dateStr} | *${jobs.length}* New Job${jobs.length > 1 ? 's' : ''}\\n`;\nheader += `\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\n\\n`;\n\nconst jobBlocks = jobs.map((job, i) => {\n  let block = `\\u{1F4BC} *${job.title}*\\n`;\n  block += `\\u{1F3E2} ${job.company}  \\u{1F4CD} ${job.location}\\n`;\n  if (job.score != null) {\n      function scoreEmoji(s) {\n          if (s >= 80) return '\\u{1F525}';\n          if (s >= 65) return '\\u{2B50}';\n          if (s >= 50) return '\\u{1F7E1}';\n          if (s >= 35) return '\\u{1F7E0}';\n          return '\\u{26AA}';\n      }\n      block += `\\u{1F916} Match Score: *${job.score}/100* ${scoreEmoji(job.score)}\\n`;\n  } else {\n      block += `\\u{1F916} Match Score: _[AI Unavailable]_\\n`;\n  }\n  block += `\\u{1F517} [Apply on LinkedIn](${job.applyLink})\\n\\n`;\n  return block;\n});\n\nconst MAX_LEN = 3800;\nconst messages = [];\nlet currentMsg = header;\n\nfor (const block of jobBlocks) {\n  if ((currentMsg + block).length > MAX_LEN) {\n    messages.push(currentMsg);\n    currentMsg = `\\u{1F3AF} *...continued (${messages.length + 1})*\\n\\n` + block;\n  } else {\n    currentMsg += block;\n  }\n}\n\ncurrentMsg += `\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\n`;\ncurrentMsg += `\\u{23F0} _Next scan in ~6 hours_`;\nmessages.push(currentMsg);\n\nstaticData.newJobs = [];\nstaticData.scoredJobs = [];\n\nreturn messages.map(msg => ({ json: { message: msg } }));"
+      },
+      "id": "39718b60-f1cf-4420-994b-163e3b14ae2d",
+      "name": "Format Summary",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1248,
+        304
+      ],
+      "typeVersion": 2,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "chatId": "=8126636123",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "f38521e9-a7e2-457c-a73f-139bb5798f74",
+      "name": "Send Job Summary",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        1696,
+        384
+      ],
+      "webhookId": "17b9ebe8-c8d4-4bd9-ad20-45842ddc2c00",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "rJEQhUwlXhIIhraH",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// No new jobs found — send a short status message\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('en-IN', {\n  weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',\n  hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'\n});\n\nconst msg = `\\u{1F50D} *LinkedIn Job Scan Complete*\\n\\u{1F4C5} ${dateStr}\\n\\n\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\n\\nNo new jobs found this cycle.\\nAll scraped jobs already exist in your sheet.\\n\\n\\u{23F0} _Next scan in ~6 hours_`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "57baec43-1a3a-4f90-8372-0564a8079b3f",
+      "name": "Format No Jobs",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        320,
+        672
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "content": "Workflow runs every 6 hours.\nChange interval as needed.",
+        "height": 260
+      },
+      "id": "a11b998e-dd64-42ca-abff-82b8398a5c78",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2368,
+        64
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "Resume from\nGoogle Drive",
+        "height": 260,
+        "color": 4
+      },
+      "id": "8901da7c-6cf4-48c6-a2c4-2dcc3d4d8908",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2096,
+        64
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "PDF → Text",
+        "height": 260,
+        "color": 5
+      },
+      "id": "88308402-cb82-437f-a732-5323ea9d5c0c",
+      "name": "Sticky Note2",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1728,
+        64
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "Build LinkedIn\nsearch URL",
+        "height": 260,
+        "width": 180
+      },
+      "id": "2d691705-5f18-449f-afbe-4877dddef79c",
+      "name": "Sticky Note4",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -992,
+        64
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Capture the new scored jobs before Read Referral Engine replaces pipeline data\nconst staticData = $getWorkflowStaticData('global');\nconst items = $input.all();\n\n// Store the new jobs so the downstream Cleanup node can access them\nstaticData.newJobsForReferral = items.map(i => ({\n  title: i.json.title || '',\n  company: i.json.company || '',\n  location: i.json.location || '',\n  applyLink: i.json.applyLink || '',\n  score: i.json.score != null ? String(i.json.score) : '',\n}));\n\n// Pass items through so Read Referral Engine can trigger\nreturn items;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        560
+      ],
+      "id": "22e5a4cb-6726-4884-a923-48ce414312e3",
+      "name": "Stash New Jobs"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo",
+          "mode": "list",
+          "cachedResultName": "n8n - Switch",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Referral Engine",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1728,
+        560
+      ],
+      "id": "37a3c831-115a-4726-a5ff-7b5a912be19e",
+      "name": "Read Referral Engine",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════\n//  CLEANUP expired/referred rows + APPEND new job slots\n// ═══════════════════════════════════════════════════════\n\nconst staticData = $getWorkflowStaticData('global');\nconst newJobs = staticData.newJobsForReferral || [];\nconst now = new Date();\nconst CUTOFF_MS = 72 * 60 * 60 * 1000;\nconst timestamp = now.toISOString();\n\n// ── 1. Read existing referral rows from input ──\nconst existingRows = $input.all().map(i => ({ ...i.json }));\n\n// ── 2. Keep rows that are NOT expired and NOT referred ──\nconst keptRows = existingRows.filter(row => {\n  // Skip empty/header rows\n  if (!row.applyLink && !row.title) return false;\n\n  // If gotReferral is marked → remove\n  if (row.gotReferral && String(row.gotReferral).trim() !== '') return false;\n\n  // If older than 72 hours → remove\n  if (row.timestamp) {\n    const age = now.getTime() - new Date(row.timestamp).getTime();\n    if (age > CUTOFF_MS) return false;\n  }\n\n  return true;\n});\n\n// ── 3. Find which applyLinks already exist (to avoid duplicates) ──\nconst existingLinks = new Set(\n  keptRows.map(r => String(r.applyLink || '').trim()).filter(l => l !== '')\n);\n\n// ── 4. Build 5 slot rows ONLY for genuinely new jobs ──\nconst newSlotRows = [];\nfor (const job of newJobs) {\n  const link = String(job.applyLink || '').trim();\n  if (link === '' || existingLinks.has(link)) continue;\n\n  for (let slot = 1; slot <= 5; slot++) {\n    newSlotRows.push({\n      timestamp,\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      applyLink: job.applyLink,\n      score: job.score,\n      resumeUrl: '',\n      refMsgOverride: '',\n      hmMsgOverride: '',\n      gotReferral: '',\n      slot: String(slot),\n      refFirst: '',\n      refLast: '',\n      refMessage: '',\n      hmFirst: '',\n      hmLast: '',\n      hmMessage: '',\n    });\n  }\n}\n\n// ── 5. Combine: all kept existing rows + all new slot rows ──\nconst allRows = [...keptRows, ...newSlotRows];\n\n// ── 6. Rebuild formulas with correct row numbers ──\n//    Google Sheet row = array index + 2 (row 1 = header)\nconst output = allRows.map((row, idx) => {\n  const R = idx + 2;\n\n  // Referral message: if refFirst is filled → generate message\n  // Priority: refMsgOverride (col H) → Config!B2 (default)\n  // Resume:   resumeUrl (col G) → Config!B4 (default)\nconst refMsg = '=IF(L' + R + '=\"\",\"\",SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE('\n  + 'IF(H' + R + '<>\"\",H' + R + ',Config!B2),'\n  + '\"{{NAME}}\",L' + R + '&\" \"&M' + R + '),'\n  + '\"{{JOB_URL}}\",E' + R + '),'\n  + '\"{{RESUME_URL}}\",IF(G' + R + '<>\"\",G' + R + ',Config!B4)),'\n  + '\"{{COMPANY}}\",C' + R + '))';\n\n  // HM message: same logic with hmMsgOverride (col I) → Config!B3\nconst hmMsg = '=IF(O' + R + '=\"\",\"\",SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE('\n  + 'IF(I' + R + '<>\"\",I' + R + ',Config!B3),'\n  + '\"{{NAME}}\",O' + R + '&\" \"&P' + R + '),'\n  + '\"{{JOB_URL}}\",E' + R + '),'\n  + '\"{{RESUME_URL}}\",IF(G' + R + '<>\"\",G' + R + ',Config!B4)),'\n  + '\"{{COMPANY}}\",C' + R + '))';\n\n  return {\n    json: {\n      timestamp: row.timestamp || '',\n      title: row.title || '',\n      company: row.company || '',\n      location: row.location || '',\n      applyLink: row.applyLink || '',\n      score: row.score != null ? String(row.score) : '',\n      resumeUrl: row.resumeUrl || '',\n      refMsgOverride: row.refMsgOverride || '',\n      hmMsgOverride: row.hmMsgOverride || '',\n      gotReferral: row.gotReferral || '',\n      slot: row.slot ? String(row.slot) : '',\n      refFirst: row.refFirst || '',\n      refLast: row.refLast || '',\n      refMessage: refMsg,\n      hmFirst: row.hmFirst || '',\n      hmLast: row.hmLast || '',\n      hmMessage: hmMsg,\n    }\n  };\n});\n\n// If nothing to write, output a passthrough so the chain doesn't break\nif (output.length === 0) {\n  return [{ json: { _noData: true } }];\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1952,
+        560
+      ],
+      "id": "f8a0d95b-bf74-4ce8-aee6-44213f8fd13e",
+      "name": "Cleanup & Append"
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo",
+          "mode": "list",
+          "cachedResultName": "n8n - Switch",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Referral Engine",
+          "mode": "name"
+        },
+        "keepFirstRow": true
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2368,
+        560
+      ],
+      "id": "5a3be91b-f7ac-4cf1-bb68-78db209b9f96",
+      "name": "Clear Referral Data",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo",
+          "mode": "list",
+          "cachedResultName": "n8n - Switch",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Referral Engine",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "applyLink",
+              "displayName": "applyLink",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "resumeUrl",
+              "displayName": "resumeUrl",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "refMsgOverride",
+              "displayName": "refMsgOverride",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hmMsgOverride",
+              "displayName": "hmMsgOverride",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "gotReferral",
+              "displayName": "gotReferral",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "slot",
+              "displayName": "slot",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "refFirst",
+              "displayName": "refFirst",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "refLast",
+              "displayName": "refLast",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "refMessage",
+              "displayName": "refMessage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hmFirst",
+              "displayName": "hmFirst",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hmLast",
+              "displayName": "hmLast",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hmMessage",
+              "displayName": "hmMessage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2880,
+        560
+      ],
+      "id": "301f7dd2-7238-42e3-999d-ea630d339a5f",
+      "name": "Write Referral Engine",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 5,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 100
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2592,
+        560
+      ],
+      "id": "bf98916e-cd72-4141-ac88-0f64333e3b04",
+      "name": "Wait1",
+      "webhookId": "ffea3446-e57a-4034-9cbc-afc63954a6f3"
+    },
+    {
+      "parameters": {
+        "amount": 100
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2160,
+        560
+      ],
+      "id": "9336068a-4469-4115-80cf-c1406fd9bcca",
+      "name": "Wait2",
+      "webhookId": "2b6cf600-c825-4768-b599-78629efcd309"
+    },
+    {
+      "parameters": {
+        "amount": 120
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1456,
+        560
+      ],
+      "id": "c8996ae9-28fe-4739-a82e-f04d79423ed3",
+      "name": "Wait3",
+      "webhookId": "a7f2d637-4549-44a5-a0ee-7e748bf65b7a"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo",
+          "mode": "list",
+          "cachedResultName": "n8n - Switch",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Companies",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "6a81e247-882f-46cd-bd9a-c07aad605a70",
+      "name": "Get Companies",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        -1360,
+        160
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Get Companies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create search URL": {
+      "main": [
+        [
+          {
+            "node": "Fetch Jobs from Linkedin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Jobs from Linkedin": {
+      "main": [
+        [
+          {
+            "node": "Extract Job Links",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Job Links": {
+      "main": [
+        [
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "Init Accumulator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Accumulator": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Build Batch Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Fetch Job Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Job Page": {
+      "main": [
+        [
+          {
+            "node": "Parse Job Attributes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Job Attributes": {
+      "main": [
+        [
+          {
+            "node": "Modify Job Attributes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modify Job Attributes": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "If New Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If New Job": {
+      "main": [
+        [
+          {
+            "node": "Accumulate Raw Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accumulate Raw Job": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Batch Prompt": {
+      "main": [
+        [
+          {
+            "node": "Has New Jobs?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has New Jobs?": {
+      "main": [
+        [
+          {
+            "node": "Score All Jobs (AI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format No Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score All Jobs (AI)": {
+      "main": [
+        [
+          {
+            "node": "Parse All Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Score All Jobs (AI)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse All Scores": {
+      "main": [
+        [
+          {
+            "node": "Save All to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save All to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Format Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Stash New Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Summary": {
+      "main": [
+        [
+          {
+            "node": "Send Job Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format No Jobs": {
+      "main": [
+        [
+          {
+            "node": "Send Job Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stash New Jobs": {
+      "main": [
+        [
+          {
+            "node": "Wait3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Referral Engine": {
+      "main": [
+        [
+          {
+            "node": "Cleanup & Append",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup & Append": {
+      "main": [
+        [
+          {
+            "node": "Wait2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Referral Data": {
+      "main": [
+        [
+          {
+            "node": "Wait1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait1": {
+      "main": [
+        [
+          {
+            "node": "Write Referral Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait2": {
+      "main": [
+        [
+          {
+            "node": "Clear Referral Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait3": {
+      "main": [
+        [
+          {
+            "node": "Read Referral Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Companies": {
+      "main": [
+        [
+          {
+            "node": "Create search URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "9358b4d9-1053-4c82-a1fe-74a9fecd8af5",
+  "meta": {
+    "instanceId": "05c87cc7859a40e88831de8642113b4acab5c0d8094bc2e657f887ff1e7eddcc"
+  },
+  "id": "EEPT9x984RaWdrEl",
+  "tags": []
+}
