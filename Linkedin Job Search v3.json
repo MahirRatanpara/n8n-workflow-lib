@@ -448,7 +448,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// PARSE ALL SCORES\nconst staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.newJobs || [];\n\n// Parse AI response\nlet scores = {};\ntry {\n  const aiText = typeof $json.text === 'string' ? $json.text : (typeof $json.content === 'string' ? $json.content : '');\n\n  const cleaned = aiText\n    .replace(/```json\\n?/g, '')\n    .replace(/```/g, '')\n    .trim();\n\n  const parsed = JSON.parse(cleaned);\n  if (Array.isArray(parsed)) {\n    parsed.forEach(s => {\n      scores[String(s.jobid)] = s;\n    });\n  }\n} catch (err) {\n  // If parsing fails, all jobs get score null\n}\n\n// Merge scores with job data — output one item per job\nconst scoredJobs = jobs.map(job => {\n  const s = scores[String(job.jobid)] || {};\n  return {\n    json: {\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description,\n      jobid: job.jobid,\n      applyLink: job.applyLink,\n      addedAt: job.addedAt || new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }),\n      score: s.score != null ? s.score : null,\n      scoreSummary: \"\"\n    }\n  };\n});\n\n// Store for telegram formatting later\nstaticData.scoredJobs = scoredJobs.map(j => ({ ...j.json }));\n\nreturn scoredJobs;"
+        "jsCode": "// PARSE ALL SCORES\nconst staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.newJobs || [];\n\n// Score threshold for the high-match sheet — from Config (minScore), default 80.\nfunction readCfg(name) {\n  try {\n    for (const r of $('Get Config').all().map(i => i.json)) {\n      if (r[name] !== undefined && r[name] !== '') return r[name];\n      const v = Object.values(r);\n      if (v.length >= 2 && String(v[0]).trim().toLowerCase() === name.toLowerCase()) return v[1];\n    }\n  } catch (e) {}\n  return undefined;\n}\nlet MIN_SCORE = Number(readCfg('minScore'));\nif (!Number.isFinite(MIN_SCORE)) MIN_SCORE = 80;\n\n// Parse AI response\nlet scores = {};\ntry {\n  const aiText = typeof $json.text === 'string' ? $json.text : (typeof $json.content === 'string' ? $json.content : '');\n\n  const cleaned = aiText\n    .replace(/```json\\n?/g, '')\n    .replace(/```/g, '')\n    .trim();\n\n  const parsed = JSON.parse(cleaned);\n  if (Array.isArray(parsed)) {\n    parsed.forEach(s => {\n      scores[String(s.jobid)] = s;\n    });\n  }\n} catch (err) {\n  // If parsing fails, all jobs get score null\n}\n\n// Merge scores with job data — output one item per job\nconst scoredJobs = jobs.map(job => {\n  const s = scores[String(job.jobid)] || {};\n  return {\n    json: {\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description,\n      jobid: job.jobid,\n      applyLink: job.applyLink,\n      addedAt: job.addedAt || new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }),\n      score: s.score != null ? s.score : null,\n      highMatch: (s.score != null && Number(s.score) >= MIN_SCORE),\n      scoreSummary: \"\"\n    }\n  };\n});\n\n// Store for telegram formatting later\nstaticData.scoredJobs = scoredJobs.map(j => ({ ...j.json }));\n\nreturn scoredJobs;"
       },
       "id": "bffa8682-4e49-4bdf-90f1-8fe7eafecd4d",
       "name": "Parse All Scores",
@@ -756,6 +756,165 @@
           "name": "Google Sheets account"
         }
       }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo",
+          "mode": "list",
+          "cachedResultName": "n8n - Switch",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DSZ4JZuiYYdzgbxSpd9Omm9jjyEGqx1uiosETxUSvJo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Low Match",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "title": "={{ $json.title }}",
+            "company": "={{ $json.company }}",
+            "location": "={{ $json.location }}",
+            "description": "={{ $json.description }}",
+            "jobid": "={{ $json.jobid }}",
+            "applyLink": "={{ $json.applyLink }}",
+            "score": "={{ $json.score }}",
+            "addedAt": "={{ $json.addedAt }}"
+          },
+          "matchingColumns": [
+            "jobid"
+          ],
+          "schema": [
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "jobid",
+              "displayName": "jobid",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "applyLink",
+              "displayName": "applyLink",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "addedAt",
+              "displayName": "addedAt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "10111213-0000-4000-8000-000000000001",
+      "name": "Save Low Match",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        288,
+        640
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "aa11bb22-cc33-4d44-8e55-ff6677889900",
+              "leftValue": "={{ $json.highMatch }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        80,
+        500
+      ],
+      "id": "20212223-0000-4000-8000-000000000002",
+      "name": "High Match?"
     }
   ],
   "pinData": {},
@@ -1005,7 +1164,12 @@
       "main": [
         [
           {
-            "node": "Save All to Sheet",
+            "node": "High Match?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Format Summary",
             "type": "main",
             "index": 0
           }
@@ -1014,13 +1178,7 @@
     },
     "Save All to Sheet": {
       "main": [
-        [
-          {
-            "node": "Format Summary",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
     "Format Summary": {
@@ -1061,6 +1219,24 @@
         [
           {
             "node": "Get Companies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Match?": {
+      "main": [
+        [
+          {
+            "node": "Save All to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Low Match",
             "type": "main",
             "index": 0
           }
