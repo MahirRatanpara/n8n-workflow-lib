@@ -1,0 +1,921 @@
+{
+  "name": "Cold Mailing Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 23
+            }
+          ]
+        }
+      },
+      "id": "01726d49-7869-438c-ba62-724ee6639358",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        816,
+        720
+      ],
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY",
+          "mode": "list",
+          "cachedResultName": "Switch Contacts",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Templates",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "92914ccf-cbf2-4378-90f2-d29a825268ad",
+      "name": "Get Templates",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        992,
+        720
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "b894dac9-1aa7-4f5f-aafb-6028dea28f73",
+      "name": "Collapse to 1 Item",
+      "type": "n8n-nodes-base.limit",
+      "position": [
+        1152,
+        720
+      ],
+      "typeVersion": 1,
+      "notesInFlow": true,
+      "notes": "Get Templates emits 7 rows. Without this, the next Sheets node runs\n7x and returns every Cold Mailing row 7 times (7 x 6 = 42 items).\nClassify Rows still sees all 7 templates via $('Get Templates').all()."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY",
+          "mode": "list",
+          "cachedResultName": "Switch Contacts",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Cold Mailing",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a708f13c-21f9-44d9-a3f8-24c02bfcedb0",
+      "name": "Get Cold Mailing Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        1312,
+        720
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a template lookup keyed by TemplateName.\n// NOTE: TemplateID T006 is duplicated in the Templates sheet (LinkedIn Connection\n// Note + Recruiter Mail), and the Cold Mailing \"TemplateId\" column actually holds\n// a TemplateName (\"Recruiter Mail\", \"Follow-Up 2 (Final)\"), so match on name, not ID.\n// \"LinkedIn Connection Note\" has an empty Subject and is not a mail template —\n// picking it will be rejected downstream rather than drafted blank.\nconst templates = {};\nfor (const t of $('Get Templates').all()) {\n  const name = (t.json.TemplateName || '').toString().trim();\n  if (name) templates[name.toLowerCase()] = t.json;\n}\n\nconst DAY = 24 * 60 * 60 * 1000;\nconst COLD_AFTER_DAYS = 4;   // Sent        -> Ready for Followup\nconst FOLLOW_AFTER_DAYS = 5; // FollowUp Sent -> Ready for Followup\nconst now = new Date();\n\n// Sheets can hand a date back as an ISO string, a locale string, or a serial\n// number, depending on the column's format. Accept all three.\nfunction parseTs(v) {\n  if (v === null || v === undefined || v === '') return null;\n  if (v instanceof Date) return v;\n  if (typeof v === 'number') return new Date(Date.UTC(1899, 11, 30) + v * DAY);\n  const s = v.toString().trim();\n  if (!s) return null;\n  const dmy = s.match(/^(\\d{1,2})[\\/\\-](\\d{1,2})[\\/\\-](\\d{4})/);\n  if (dmy) return new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));\n  const parsed = Date.parse(s);\n  return isNaN(parsed) ? null : new Date(parsed);\n}\n\nfunction fill(str, ctx) {\n  return (str || '').toString()\n    .replace(/\\{\\{\\s*(\\w+)\\s*\\}\\}/g, (_, k) => (ctx[k] === undefined ? '' : ctx[k]).toString());\n}\n\nconst out = [];\nconst seen = new Set();\n\nfor (const item of $input.all()) {\n  const r = item.json;\n\n  // Guard: an upstream node that fans out makes the Sheets read run once per\n  // input item, so every row arrives N times. One draft per row, always.\n  if (seen.has(r.row_number)) continue;\n  seen.add(r.row_number);\n\n  const status = (r['Status'] || '').toString().trim();\n  const key = status.toLowerCase();\n\n  const fullName = (r['Recruiter Name'] || '').toString().trim();\n  const parts = fullName.split(/\\s+/).filter(Boolean);\n\n  // Cold Mailing column names differ from the Templates placeholder names.\n  const ctx = {\n    FirstName: parts[0] || '',\n    LastName: parts.slice(1).join(' '),\n    FullName: fullName,\n    Email: (r['Recruiter Email'] || '').toString().trim(),\n    Company: (r['Job Company'] || '').toString().trim(),\n    Role: (r['Job Title'] || '').toString().trim(),\n    JobURL: (r['Job Link'] || '').toString().trim(),\n    ResumeURL: (r['ResumeLink'] || '').toString().trim(),\n    LinkedInURL: '',\n    CustomNote: '',\n  };\n\n  const threadId = (r['ThreadId'] || '').toString().trim();\n  const ts = parseTs(r['Timestamp']);\n  const ageDays = ts ? (now - ts) / DAY : null;\n\n  const base = {\n    rowNumber: r.row_number,\n    status,\n    email: ctx.Email,\n    recruiter: fullName,\n    company: ctx.Company,\n    resumeLink: ctx.ResumeURL,\n    threadId,\n  };\n\n  const skip = (reason) => out.push({ json: { ...base, action: 'skip', reason } });\n\n  // The TemplateId column drives every draft, cold and followup alike: whatever\n  // template name you put in that column is what gets written. Change it to\n  // \"Follow-Up 2 (Final)\" when you want the second followup to differ.\n  const resolveTemplate = () => {\n    const tplName = (r['TemplateId'] || '').toString().trim();\n    if (!tplName) return { error: 'TemplateId is empty' };\n    const tpl = templates[tplName.toLowerCase()];\n    if (!tpl) return { error: 'Template \"' + tplName + '\" not found in Templates sheet' };\n    const subject = fill(tpl.Subject, ctx);\n    const body = fill(tpl.Body, ctx);\n    // Never hand Gmail a blank subject or body — surface it as a skip instead of\n    // drafting an empty message that looks like it worked. \"LinkedIn Connection\n    // Note\" has no Subject at all, so selecting it is always a mistake.\n    if (!body.trim()) return { error: 'Template \"' + tplName + '\" has an empty Body column' };\n    if (!subject.trim()) return { error: 'Template \"' + tplName + '\" has an empty Subject column' };\n    return { tplName, subject, body };\n  };\n\n  if (key === 'pending') {\n    if (!ctx.Email) { skip('Recruiter Email is empty'); continue; }\n    if (!ctx.ResumeURL) { skip('ResumeLink is empty'); continue; }\n    const t = resolveTemplate();\n    if (t.error) { skip(t.error); continue; }\n    out.push({ json: { ...base, action: 'draft_cold',\n                       templateName: t.tplName, subject: t.subject, body: t.body } });\n\n  } else if (key === 'sent') {\n    if (ageDays === null) { skip('Timestamp missing or unparseable'); continue; }\n    if (ageDays >= COLD_AFTER_DAYS) out.push({ json: { ...base, action: 'mark_ready' } });\n    else skip('Only ' + ageDays.toFixed(1) + 'd since sent (needs ' + COLD_AFTER_DAYS + ')');\n\n  } else if (key === 'followup') {\n    if (!threadId) { skip('Status is FollowUp but ThreadId is empty'); continue; }\n    if (!ctx.Email) { skip('Recruiter Email is empty'); continue; }\n    const t = resolveTemplate();\n    if (t.error) { skip(t.error); continue; }\n    out.push({ json: { ...base, action: 'draft_followup',\n                       templateName: t.tplName, subject: t.subject, body: t.body } });\n\n  } else if (key === 'followup sent') {\n    if (ageDays === null) { skip('Timestamp missing or unparseable'); continue; }\n    if (ageDays >= FOLLOW_AFTER_DAYS) out.push({ json: { ...base, action: 'mark_ready' } });\n    else skip('Only ' + ageDays.toFixed(1) + 'd since followup (needs ' + FOLLOW_AFTER_DAYS + ')');\n\n  } else {\n    // \"Ready for Followup\" lands here on purpose: it is the manual gate.\n    skip('Status \"' + status + '\" is not actionable');\n  }\n}\n\nreturn out;"
+      },
+      "id": "5fc447b5-183b-4250-b3b6-f380c8c39f74",
+      "name": "Classify Rows",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1472,
+        720
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "57e5cf63-b755-48fd-b5ad-0209722d73e4",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "draft_cold",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "draft_cold"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e1c7c143-610e-4158-95f4-f6490b3f74c3",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "draft_followup",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "draft_followup"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "4ef32da2-7be9-4086-b787-6291fde85225",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "mark_ready",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "mark_ready"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "skipped"
+        }
+      },
+      "id": "0b1b0418-8909-4038-a736-68aac1b10f4a",
+      "name": "Route by Action",
+      "type": "n8n-nodes-base.switch",
+      "position": [
+        1696,
+        720
+      ],
+      "typeVersion": 3.2
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.resumeLink }}",
+          "mode": "url"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "9350573b-575e-4207-ad5a-15096dee1fe0",
+      "name": "Download Resume",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [
+        1952,
+        448
+      ],
+      "typeVersion": 3,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "2SF7ob7VCnwgbeRC",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $('Classify Rows').item.json.subject }}",
+        "message": "={{ $('Classify Rows').item.json.body }}",
+        "options": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "data"
+              }
+            ]
+          },
+          "sendTo": "={{ $('Classify Rows').item.json.email }}"
+        }
+      },
+      "id": "84d8d19f-943c-4a61-899a-0335958551e8",
+      "name": "Draft Cold Mail",
+      "type": "n8n-nodes-base.gmail",
+      "position": [
+        2176,
+        448
+      ],
+      "typeVersion": 2.1,
+      "webhookId": "142233e1-10d9-4c96-b1a9-03aa1e354d48",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "nFbH9p01avi2rD5X",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY",
+          "mode": "list",
+          "cachedResultName": "Switch Contacts",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Cold Mailing",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $('Classify Rows').item.json.rowNumber }}",
+            "Status": "Sent",
+            "ThreadId": "={{ $json.message.threadId }}",
+            "Timestamp": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Recruiter Name",
+              "displayName": "Recruiter Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Recruiter Email",
+              "displayName": "Recruiter Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Link",
+              "displayName": "Job Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Company",
+              "displayName": "Job Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ResumeLink",
+              "displayName": "ResumeLink",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "TemplateId",
+              "displayName": "TemplateId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ThreadId",
+              "displayName": "ThreadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e55011b6-94c9-4d63-b656-3569b149f93b",
+      "name": "Mark Sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        2400,
+        448
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.body }}",
+        "options": {
+          "threadId": "={{ $json.threadId }}",
+          "sendTo": "={{ $json.email }}"
+        }
+      },
+      "id": "e8a86723-3b7c-4853-b207-99432edcaebf",
+      "name": "Draft Followup Reply",
+      "type": "n8n-nodes-base.gmail",
+      "position": [
+        1952,
+        688
+      ],
+      "typeVersion": 2.1,
+      "webhookId": "3ac0f0f2-fefc-40f3-941b-b2e3e0dd9d7a",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "nFbH9p01avi2rD5X",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY",
+          "mode": "list",
+          "cachedResultName": "Switch Contacts",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Cold Mailing",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $('Classify Rows').item.json.rowNumber }}",
+            "Status": "FollowUp Sent",
+            "Timestamp": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Recruiter Name",
+              "displayName": "Recruiter Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Recruiter Email",
+              "displayName": "Recruiter Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Link",
+              "displayName": "Job Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Company",
+              "displayName": "Job Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ResumeLink",
+              "displayName": "ResumeLink",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "TemplateId",
+              "displayName": "TemplateId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ThreadId",
+              "displayName": "ThreadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "dbc5915c-b0e6-4475-a45d-15647a5d227b",
+      "name": "Mark FollowUp Sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        2176,
+        688
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY",
+          "mode": "list",
+          "cachedResultName": "Switch Contacts",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1NkiDm46ftPj1cYYR1tP0FQjo8BXoniWTH-m1bYLr0mY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Cold Mailing",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $json.rowNumber }}",
+            "Status": "Ready for Followup"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Recruiter Name",
+              "displayName": "Recruiter Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Recruiter Email",
+              "displayName": "Recruiter Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Link",
+              "displayName": "Job Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Job Company",
+              "displayName": "Job Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ResumeLink",
+              "displayName": "ResumeLink",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "TemplateId",
+              "displayName": "TemplateId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ThreadId",
+              "displayName": "ThreadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b4613802-7ada-4c2d-869e-8bf9acfccd87",
+      "name": "Mark Ready for Followup",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [
+        1952,
+        912
+      ],
+      "typeVersion": 4.6,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "IJGwJa8hH4IF7wFD",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "140f63ff-ef93-40e5-bfbe-9c9041dc4280",
+      "name": "Skipped (see reason)",
+      "type": "n8n-nodes-base.noOp",
+      "position": [
+        1952,
+        1088
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## Status state machine\n\n**Pending** -> draft cold mail + resume -> `Sent` (writes ThreadId + Timestamp)\n\n**Sent** -> after **4 days** -> `Ready for Followup`\n\n**Ready for Followup** -> *ignored on purpose.* This is your manual gate — flip it to `FollowUp` yourself to authorise the followup.\n\n**FollowUp** -> threaded reply, no resume -> `FollowUp Sent`\n\n**FollowUp Sent** -> after **5 days** -> `Ready for Followup` (loops back through your gate)",
+        "height": 340,
+        "width": 460,
+        "color": 7
+      },
+      "id": "d5154911-60fc-4195-bab1-87778206c534",
+      "name": "Sticky Note 8686",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        816,
+        352
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## The TemplateId column picks the template\n\nIt holds a **TemplateName** (`Recruiter Mail`, `Follow-Up 1`, `Follow-Up 2 (Final)`) — matched against the Templates tab.\n\nThis drives **both** the cold mail and the followup. Want the 2nd followup to read differently? Set TemplateId to `Follow-Up 2 (Final)` on that row before you flip Status to `FollowUp`.\n\nA template whose Body is empty is **skipped**, never drafted blank.",
+        "height": 340,
+        "width": 400,
+        "color": 3
+      },
+      "id": "eccc928f-f377-46e5-a53c-28add9797cde",
+      "name": "Sticky Note 8319",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1296,
+        352
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## Drafts only\n\nNothing is ever sent. Rows are marked `Sent` at **draft** time, so the 4-day clock starts when the draft is made, not when you actually send it.\n\nSend the drafts from Gmail yourself.\n\n**Setup:** pick a Gmail credential on both Gmail nodes; format **Timestamp** as Plain text; make sure Sheets/Drive creds are on `mahir2cool@gmail.com`.",
+        "height": 340,
+        "width": 380,
+        "color": 4
+      },
+      "id": "1b7c04a1-d5aa-4eb6-9554-4d6bad292602",
+      "name": "Sticky Note aabf",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1712,
+        352
+      ],
+      "typeVersion": 1
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Templates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Templates": {
+      "main": [
+        [
+          {
+            "node": "Collapse to 1 Item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collapse to 1 Item": {
+      "main": [
+        [
+          {
+            "node": "Get Cold Mailing Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Cold Mailing Rows": {
+      "main": [
+        [
+          {
+            "node": "Classify Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Rows": {
+      "main": [
+        [
+          {
+            "node": "Route by Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Action": {
+      "main": [
+        [
+          {
+            "node": "Download Resume",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft Followup Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Ready for Followup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skipped (see reason)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Resume": {
+      "main": [
+        [
+          {
+            "node": "Draft Cold Mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Cold Mail": {
+      "main": [
+        [
+          {
+            "node": "Mark Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Followup Reply": {
+      "main": [
+        [
+          {
+            "node": "Mark FollowUp Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "ec189f5c-2ab2-4973-a0ab-c2c718713a26",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "05c87cc7859a40e88831de8642113b4acab5c0d8094bc2e657f887ff1e7eddcc"
+  },
+  "id": "y96aS6XXM8KyIEkv",
+  "tags": []
+}

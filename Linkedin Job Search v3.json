@@ -1,5 +1,5 @@
 {
-  "name": "Linkedin Job Search v2",
+  "name": "Linkedin Job Search v3",
   "nodes": [
     {
       "parameters": {
@@ -7,18 +7,17 @@
           "interval": [
             {
               "field": "hours",
-              "hoursInterval": 2,
-              "triggerAtMinute": 30
+              "hoursInterval": 3
             }
           ]
         }
       },
-      "id": "72480ada-c4d4-419a-8b52-af56b5cdfaba",
+      "id": "c40b228a-4430-44fd-b1f5-5f3b0b5d61ce",
       "name": "Schedule Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "position": [
-        -2256,
-        160
+        -2960,
+        304
       ],
       "notesInFlow": false,
       "typeVersion": 1.2
@@ -35,12 +34,12 @@
         },
         "options": {}
       },
-      "id": "60e13639-8d02-4b00-ad10-2c3e301426d5",
+      "id": "24e7f8ae-41ae-4487-a66c-5f3b31aba1ea",
       "name": "Download file",
       "type": "n8n-nodes-base.googleDrive",
       "position": [
-        -2016,
-        160
+        -2720,
+        304
       ],
       "typeVersion": 3,
       "credentials": {
@@ -55,25 +54,25 @@
         "operation": "pdf",
         "options": {}
       },
-      "id": "e3795b2e-eba9-401c-8938-7ec75ed93480",
+      "id": "546802f2-b732-404e-b884-1b741d718438",
       "name": "Extract from File",
       "type": "n8n-nodes-base.extractFromFile",
       "position": [
-        -1648,
-        160
+        -2352,
+        304
       ],
       "typeVersion": 1
     },
     {
       "parameters": {
-        "jsCode": "// ============================================================\n// SETTINGS — LOCATION values are static; time window is read from Config\n// ============================================================\nconst LOCATION = 'India';           // Search location\nconst GEO_ID = '102713980';         // India geoId\nconst LOCATION_FILTER = '105214831'; // Bengaluru, Karnataka f_PP filter\n\n// Read max opening age (in seconds) from the Config tab; default 21600 (6h).\n// Supports a header column named maxAgeSeconds, or a vertical label|value row.\nfunction readCfg(name) {\n  try {\n    const rows = $('Get Config').all().map(i => i.json);\n    for (const r of rows) {\n      if (r[name] !== undefined && r[name] !== '') return r[name];\n      const vals = Object.values(r);\n      if (vals.length >= 2 && String(vals[0]).trim().toLowerCase() === name.toLowerCase()) {\n        return vals[1];\n      }\n    }\n  } catch (e) {}\n  return undefined;\n}\nlet TIME_WINDOW_SECONDS = Number(readCfg('maxAgeSeconds'));\nif (!Number.isFinite(TIME_WINDOW_SECONDS) || TIME_WINDOW_SECONDS <= 0) TIME_WINDOW_SECONDS = 21600;  // default 6h\nconsole.log('Time window (f_TPR): ' + TIME_WINDOW_SECONDS + 's');\n// ============================================================\n\nconst config =  $input.all().map(i => i.json) || [];\n// Define keyword templates per bucket\nconst bucketKeywords = {\n  '1': '\"software development engineer\" OR \"SDE\" OR \"SDE II\" OR \"SDE 2\" OR \"SDE-II\" OR \"software engineer II\" OR \"Software Engineer-2\" OR \"software engineer 2\" OR \"software engineer - II\"',\n  '2': '\"software engineer III\" OR \"software engineer 3\" OR \"software developer 3\"',\n  '3': '\"software engineer\" OR \"software developer\" OR \"backend engineer\" OR \"SDE\" OR \"MTS\" OR \"member of technical staff\"',\n  '4': '\"software engineer\" OR \"software developer\" OR \"backend engineer\" OR \"SDE\" OR \"MTS\" OR \"member of technical staff\"'\n};\n\n// Group active companies by bucket\nconst buckets = {};\nfor (const item of config) {\n  const isActive = String(item.Active).toUpperCase() === 'TRUE' || item.Active === true;\n  if (!isActive) continue;\n  \n  const bucket = String(item.Bucket);\n  if (!buckets[bucket]) buckets[bucket] = [];\n  buckets[bucket].push(String(item.CompanyID));\n}\n\n// Build LinkedIn search URLs\nconst urls = [];\nfor (const [bucket, companyIds] of Object.entries(buckets)) {\n  const keywords = bucketKeywords[bucket];\n    console.log(\"bucket: \" + bucket);\n\n  if (!keywords || companyIds.length === 0) continue;\n  \n  const encodedKeywords = encodeURIComponent(keywords);\n  const companyFilter = companyIds.join(',');\n  const encodedLocation = encodeURIComponent(LOCATION);\n  \n  const url = `https://www.linkedin.com/jobs/search/?keywords=${encodedKeywords}&f_C=${companyFilter}&f_TPR=r${TIME_WINDOW_SECONDS}&location=${encodedLocation}&geoId=${GEO_ID}&f_PP=${LOCATION_FILTER}&sortBy=DD`;\n\n  \n  urls.push({\n    url: url,\n    bucket: bucket,\n    companyCount: companyIds.length\n  });\n}\n\nconsole.log(`Built ${urls.length} search URLs for ${Object.keys(buckets).length} active buckets`);\n\nif (urls.length === 0) {\n  return [{json: {url: '', bucket: '0', companyCount: 0, noUrls: true}}];\n}\n\nreturn urls.map(u => ({json: u}));"
+        "jsCode": "// ============================================================\n// SETTINGS — LOCATION values are static; time window is read from Config\n// ============================================================\nconst LOCATION = 'India';           // Search location\nconst GEO_ID = '102713980';         // India geoId\nconst LOCATION_FILTER = '105214831'; // Bengaluru, Karnataka f_PP filter\n\n// Read max opening age (in seconds) from the Config tab; default 21600 (6h).\n// Supports a header column named maxAgeSeconds, or a vertical label|value row.\nfunction readCfg(name) {\n  try {\n    const rows = $('Get Config').all().map(i => i.json);\n    for (const r of rows) {\n      if (r[name] !== undefined && r[name] !== '') return r[name];\n      const vals = Object.values(r);\n      if (vals.length >= 2 && String(vals[0]).trim().toLowerCase() === name.toLowerCase()) {\n        return vals[1];\n      }\n    }\n  } catch (e) {}\n  return undefined;\n}\nlet TIME_WINDOW_SECONDS = Number(readCfg('maxAgeSeconds'));\nif (!Number.isFinite(TIME_WINDOW_SECONDS) || TIME_WINDOW_SECONDS <= 0) TIME_WINDOW_SECONDS = 21600;  // default 6h\nconsole.log('Time window (f_TPR): ' + TIME_WINDOW_SECONDS + 's');\n// ============================================================\n\nconst config =  $input.all().map(i => i.json) || [];\n// Define keyword templates per bucket\nconst bucketKeywords = {\n  '1': '\"software development engineer\" OR \"SDE\" OR \"SDE II\" OR \"SDE 2\" OR \"SDE-II\" OR \"software engineer II\" OR \"Software Engineer-2\" OR \"software engineer 2\" OR \"software engineer - II\"',\n  '2': '\"software engineer III\" OR \"software engineer 3\" OR \"software developer 3\"',\n  '3': '\"software engineer\" OR \"software developer\" OR \"backend engineer\" OR \"SDE\" OR \"MTS\" OR \"member of technical staff\"',\n  '4': '\"software engineer\" OR \"software developer\" OR \"backend engineer\" OR \"SDE\" OR \"MTS\" OR \"member of technical staff\"'\n};\n\n// Group active companies by bucket\nconst buckets = {};\nfor (const item of config) {\n  const isActive = String(item.Active).toUpperCase() === 'TRUE' || item.Active === true;\n  if (!isActive) continue;\n  \n  const bucket = String(item.Bucket);\n  if (!buckets[bucket]) buckets[bucket] = [];\n  buckets[bucket].push(String(item.CompanyID));\n}\n\n// ── Publish the TITLE vocabulary from the bucket keywords (single source of\n// truth). A scraped job is kept later only if its TITLE contains one of these\n// phrases. LinkedIn matches loosely against the whole posting, so this re-\n// applies your own search terms to the title. Add variants to a bucket's\n// keyword string (e.g. \"full stack\", \"SW engineer\") to allow those titles.\nconst staticData = $getWorkflowStaticData('global');\nconst phraseSet = new Set();\nfor (const bucket of Object.keys(buckets)) {\n  for (const q of ((bucketKeywords[bucket] || '').match(/\"([^\"]+)\"/g) || [])) {\n    phraseSet.add(q.replace(/\"/g, '').trim());\n  }\n}\nstaticData.titlePhrases = [...phraseSet];\nconsole.log('Title vocabulary (' + staticData.titlePhrases.length + '): ' + staticData.titlePhrases.join(' | '));\n\n// Build LinkedIn search URLs\nconst urls = [];\nfor (const [bucket, companyIds] of Object.entries(buckets)) {\n  const keywords = bucketKeywords[bucket];\n    console.log(\"bucket: \" + bucket);\n\n  if (!keywords || companyIds.length === 0) continue;\n  \n  const encodedKeywords = encodeURIComponent(keywords);\n  const companyFilter = companyIds.join(',');\n  const encodedLocation = encodeURIComponent(LOCATION);\n  \n  const url = `https://www.linkedin.com/jobs/search/?keywords=${encodedKeywords}&f_C=${companyFilter}&f_TPR=r${TIME_WINDOW_SECONDS}&location=${encodedLocation}&geoId=${GEO_ID}&f_PP=${LOCATION_FILTER}&sortBy=DD`;\n\n  \n  urls.push({\n    url: url,\n    bucket: bucket,\n    companyCount: companyIds.length\n  });\n}\n\nconsole.log(`Built ${urls.length} search URLs for ${Object.keys(buckets).length} active buckets`);\n\nif (urls.length === 0) {\n  return [{json: {url: '', bucket: '0', companyCount: 0, noUrls: true}}];\n}\n\nreturn urls.map(u => ({json: u}));"
       },
-      "id": "a0944cb9-3229-4a90-aa9e-1c24d929d06a",
+      "id": "e44575e7-40bd-4f71-be98-06a4338afe01",
       "name": "Create search URL",
       "type": "n8n-nodes-base.code",
       "position": [
-        -960,
-        160
+        -1664,
+        304
       ],
       "typeVersion": 2,
       "executeOnce": false
@@ -83,12 +82,12 @@
         "url": "={{ $json.url }}",
         "options": {}
       },
-      "id": "d91a4ea9-7075-41f0-9e4d-86b7942dfc71",
+      "id": "95edf1b4-cf33-44ba-afde-a6273a952907",
       "name": "Fetch Jobs from Linkedin",
       "type": "n8n-nodes-base.httpRequest",
       "position": [
-        -768,
-        160
+        -1472,
+        304
       ],
       "typeVersion": 4.2,
       "retryOnFail": true,
@@ -110,12 +109,12 @@
         },
         "options": {}
       },
-      "id": "4ca513cd-99f8-4988-ac93-1174f6dceb4b",
+      "id": "418ddcfc-d994-4a54-961b-7bba789508c9",
       "name": "Extract Job Links",
       "type": "n8n-nodes-base.html",
       "position": [
-        -592,
-        160
+        -1296,
+        304
       ],
       "typeVersion": 1.2
     },
@@ -124,12 +123,12 @@
         "fieldToSplitOut": "links",
         "options": {}
       },
-      "id": "ca6b5f2e-4f7f-41a9-8bac-2fa1173716ab",
+      "id": "a0b9ab67-fc03-4e73-b012-4040b869b960",
       "name": "Split Out",
       "type": "n8n-nodes-base.splitOut",
       "position": [
-        -384,
-        160
+        -1088,
+        304
       ],
       "typeVersion": 1
     },
@@ -137,12 +136,12 @@
       "parameters": {
         "jsCode": "// Reset accumulator at the start of each execution\nconst staticData = $getWorkflowStaticData('global');\nstaticData.newJobs = [];\nstaticData.scoredJobs = [];\nreturn $input.all();"
       },
-      "id": "38d5844c-3024-4484-992e-20178f45b3bd",
+      "id": "05a2c64a-2f47-463e-aeda-1fd7133f0caf",
       "name": "Init Accumulator",
       "type": "n8n-nodes-base.code",
       "position": [
-        -192,
-        144
+        -896,
+        288
       ],
       "typeVersion": 2
     },
@@ -150,12 +149,12 @@
       "parameters": {
         "options": {}
       },
-      "id": "65e81797-f2a8-499e-9b85-de31e2c0c978",
+      "id": "ef892769-a7c5-4de7-9876-3ef925400096",
       "name": "Loop Over Items",
       "type": "n8n-nodes-base.splitInBatches",
       "position": [
-        0,
-        0
+        -704,
+        144
       ],
       "typeVersion": 3
     },
@@ -163,12 +162,12 @@
       "parameters": {
         "amount": 20
       },
-      "id": "5663afba-72f0-44b4-bb8c-cebca851d7c0",
+      "id": "31393d6f-9c42-4a85-9125-7f2d82db7064",
       "name": "Wait",
       "type": "n8n-nodes-base.wait",
       "position": [
-        208,
-        16
+        -496,
+        160
       ],
       "webhookId": "c9cb4878-ae4d-4b8e-bd37-5395011f7761",
       "typeVersion": 1.1
@@ -178,12 +177,12 @@
         "url": "={{ $json.links }}",
         "options": {}
       },
-      "id": "9e6561d9-4ea2-4879-a38a-fe96e11c23ee",
+      "id": "b673ffb3-dc24-43d0-8f87-7a7f45753977",
       "name": "Fetch Job Page",
       "type": "n8n-nodes-base.httpRequest",
       "position": [
-        400,
-        16
+        -304,
+        160
       ],
       "executeOnce": false,
       "retryOnFail": true,
@@ -222,12 +221,12 @@
         },
         "options": {}
       },
-      "id": "7d881033-0b60-4fe8-9ff9-dd01aba2964d",
+      "id": "81b719e5-866b-467a-9912-16631dfb4653",
       "name": "Parse Job Attributes",
       "type": "n8n-nodes-base.html",
       "position": [
-        592,
-        16
+        -112,
+        160
       ],
       "typeVersion": 1.2
     },
@@ -258,12 +257,12 @@
         "includeOtherFields": true,
         "options": {}
       },
-      "id": "209232f6-8392-49e9-b32c-d4f68dc0c8da",
+      "id": "f90aa485-b5fe-4c6b-849d-47e2de429f38",
       "name": "Modify Job Attributes",
       "type": "n8n-nodes-base.set",
       "position": [
-        800,
-        16
+        96,
+        160
       ],
       "typeVersion": 3.4
     },
@@ -294,10 +293,10 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        992,
-        16
+        288,
+        160
       ],
-      "id": "bd22b3d4-38e9-411c-be12-0ef9b00eae38",
+      "id": "351e4566-c3a8-44a3-a557-fcf2cc346e19",
       "name": "Get row(s) in sheet",
       "alwaysOutputData": true,
       "retryOnFail": true,
@@ -338,23 +337,23 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        1200,
-        48
+        496,
+        192
       ],
-      "id": "794ce95b-04a4-4e64-aec6-7f2befb4f12f",
+      "id": "40b66fe5-616c-4ba6-840e-b4c804f47dc0",
       "name": "If New Job",
       "executeOnce": false
     },
     {
       "parameters": {
-        "jsCode": "// Store new job data for batch AI scoring later — with EXPERIENCE (years) gating only\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.newJobs) staticData.newJobs = [];\n\nconst jobData = $('Modify Job Attributes').item.json;\nconst title = String(jobData.title || '');\nconst description = String(jobData.description || '');\n\n// ── Read experience band [minExp, maxExp] from the Config tab ──\n// Supports either a header column named minExp/maxExp, or a vertical\n// label|value layout (label in col A, number in col B) like Config!B2..B4.\nfunction readCfg(name) {\n  try {\n    const rows = $('Get Config').all().map(i => i.json);\n    for (const r of rows) {\n      if (r[name] !== undefined && r[name] !== '') return r[name];\n      const vals = Object.values(r);\n      if (vals.length >= 2 && String(vals[0]).trim().toLowerCase() === name.toLowerCase()) {\n        return vals[1];\n      }\n    }\n  } catch (e) {}\n  return undefined;\n}\nlet minExp = Number(readCfg('minExp'));\nlet maxExp = Number(readCfg('maxExp'));\nif (!Number.isFinite(minExp)) minExp = 0;\nif (!Number.isFinite(maxExp)) maxExp = Infinity;\n\n// ── EXPERIENCE FILTER: parse the REQUIRED years, keep only if it overlaps my band ──\n// Only matches genuine experience requirements (\"<n> years ... experience\" or\n// \"experience: <n> years\"), so unrelated prose like \"over the past 10 years\"\n// or \"5 years ago\" is ignored. A single number is treated as a MINIMUM.\nfunction parseExp(text) {\n  const t = text.toLowerCase().replace(/\\s+/g, ' ');\n  // \"<...> experience\" tail: years [' ] [of] [relevant/professional/...] experience\n  const EXP = \"(?:years?|yrs?)(?:['\\u2019]s?)?(?:\\\\s+of)?(?:\\\\s+(?:relevant|professional|industry|overall|total|work|hands[-\\\\s]?on|prior|min(?:imum)?|software|engineering))*\\\\s+experience\";\n  // range before the experience tail: \"3-5 years of experience\"\n  let m = t.match(new RegExp(\"(\\\\d{1,2})\\\\s*(?:-|\\u2013|\\u2014|to)\\\\s*(\\\\d{1,2})\\\\s*\\\\+?\\\\s*\" + EXP));\n  if (m) return [Number(m[1]), Number(m[2])];\n  // single before the experience tail: \"5+ years of experience\", \"minimum 5 years experience\"\n  m = t.match(new RegExp(\"(?:minimum|min|at\\\\s*least|atleast|over|more than)?\\\\s*(\\\\d{1,2})\\\\s*\\\\+?\\\\s*\" + EXP));\n  if (m) return [Number(m[1]), Infinity];\n  // \"experience: 3-5 years\" / \"experience of 5+ years\"\n  m = t.match(/experience\\s*(?:of|:|-)?\\s*(\\d{1,2})\\s*(?:-|\\u2013|\\u2014|to)\\s*(\\d{1,2})\\s*\\+?\\s*(?:years?|yrs?)/);\n  if (m) return [Number(m[1]), Number(m[2])];\n  m = t.match(/experience\\s*(?:of|:|-)?\\s*(\\d{1,2})\\s*\\+?\\s*(?:years?|yrs?)/);\n  if (m) return [Number(m[1]), Infinity];\n  return null;\n}\n\nconst jobExp = parseExp(description);\nif (jobExp) {\n  const [jobMin, jobMax] = jobExp;\n  const overlaps = jobMin <= maxExp && jobMax >= minExp; // interval overlap\n  if (!overlaps) {\n    console.log('[exp-filter] dropped ' + jobMin + '-' + jobMax + ' vs band ' + minExp + '-' + maxExp + ': ' + title);\n    return $input.all();\n  }\n}\n// If no experience is stated in the description, the job is kept (per requirement).\n\nstaticData.newJobs.push({\n  title: jobData.title || '',\n  company: jobData.company || '',\n  location: jobData.location || '',\n  description: jobData.description || '',\n  jobid: jobData.jobid || '',\n  applyLink: (jobData.applyLink || '').trim()\n});\n\nreturn $input.all();"
+        "jsCode": "// Store new job data for batch AI scoring later — with EXPERIENCE (years) gating only\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.newJobs) staticData.newJobs = [];\n\nconst jobData = $('Modify Job Attributes').item.json;\nconst title = String(jobData.title || '');\nconst description = String(jobData.description || '');\n\n// ── Read experience band [minExp, maxExp] from the Config tab ──\n// Supports either a header column named minExp/maxExp, or a vertical\n// label|value layout (label in col A, number in col B) like Config!B2..B4.\nfunction readCfg(name) {\n  try {\n    const rows = $('Get Config').all().map(i => i.json);\n    for (const r of rows) {\n      if (r[name] !== undefined && r[name] !== '') return r[name];\n      const vals = Object.values(r);\n      if (vals.length >= 2 && String(vals[0]).trim().toLowerCase() === name.toLowerCase()) {\n        return vals[1];\n      }\n    }\n  } catch (e) {}\n  return undefined;\n}\nlet minExp = Number(readCfg('minExp'));\nlet maxExp = Number(readCfg('maxExp'));\nif (!Number.isFinite(minExp)) minExp = 0;\nif (!Number.isFinite(maxExp)) maxExp = Infinity;\n\n// ── TITLE FILTER (search-vocabulary based — no reject list) ──\n// Keep a job only if its TITLE contains one of the exact phrases used to build\n// the LinkedIn search (bucketKeywords -> staticData.titlePhrases). Change a\n// bucket's search string and this filter follows automatically.\nconst titlePhrases = staticData.titlePhrases || [];\nconst normStr = (s) => ' ' + String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + ' ';\nconst normTitle = normStr(title);\nconst titleOk = titlePhrases.length === 0 ? true : titlePhrases.some(p => normTitle.includes(normStr(p)));\nif (!titleOk) {\n  console.log('[title-filter] dropped (title not in search vocabulary): ' + title);\n  return $input.all();\n}\n\n// ── EXPERIENCE FILTER (robust): scan ALL \"<n>[+]/<n>-<m> years\" mentions,\n// ignore company-history prose, and gate on the HIGHEST minimum stated so\n// senior roles (e.g. \"12+ years\") are reliably dropped. Overlap rule vs band.\nfunction parseExp(text) {\n  const t = (' ' + text.toLowerCase() + ' ').replace(/[–—]/g, '-').replace(/\\s+/g, ' ');\n  // Any \"<n>[+] [-<m>] year(s)/yr(s)\" mention, with an optional lead qualifier.\n  const re = /(?:(up to|minimum|min|at least|atleast|over|more than)\\s+)?(\\d{1,2})\\s*(\\+)?\\s*(?:-|to)?\\s*(\\d{1,2})?\\s*(?:years?|yrs?)\\b/g;\n  // Skip company-history / tenure prose (not an experience requirement).\n  const PROSE_BEFORE = /(for|past|last|over the|since|founded|established|innovating|serving|celebrat|nearly|almost|every)\\s*$/;\n  const PROSE_AFTER = /^\\s*(ago|old|now|running|strong|history|journey|anniversary|of (?:growth|history|innovation|operation|excellence))/;\n  const reqs = [];\n  let m;\n  while ((m = re.exec(t)) !== null) {\n    const lead = m[1] || '', n1 = Number(m[2]), plus = !!m[3], n2 = m[4] ? Number(m[4]) : null;\n    const before = t.slice(Math.max(0, m.index - 18), m.index);\n    const after = t.slice(re.lastIndex, re.lastIndex + 16);\n    if (PROSE_BEFORE.test(before) || PROSE_AFTER.test(after)) continue;\n    if (/up to/.test(lead)) { reqs.push([0, n2 != null ? n2 : n1]); continue; } // \"up to N\" = max\n    if (n2 != null) reqs.push([Math.min(n1, n2), Math.max(n1, n2)]);            // range \"N-M\"\n    else reqs.push([n1, (plus || lead) ? Infinity : n1]);                      // \"N+\" / \"min N\" / bare \"N\"\n  }\n  if (reqs.length === 0) return null;\n  // Representative requirement = the HIGHEST minimum stated (the senior gate),\n  // so a role that anywhere asks for 12+ years is treated as a 12+ role.\n  reqs.sort((a, b) => b[0] - a[0]);\n  return reqs[0];\n}\n\nconst jobExp = parseExp(description);\nif (jobExp) {\n  const [jobMin, jobMax] = jobExp;\n  const overlaps = jobMin <= maxExp && jobMax >= minExp; // interval overlap\n  if (!overlaps) {\n    console.log('[exp-filter] dropped ' + jobMin + '-' + jobMax + ' vs band ' + minExp + '-' + maxExp + ': ' + title);\n    return $input.all();\n  }\n}\n// If no experience is stated in the description, the job is kept (per requirement).\n\n// Entry timestamp (IST), recorded when the job first enters the pipeline\nconst addedAt = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' });\n\nstaticData.newJobs.push({\n  title: jobData.title || '',\n  company: jobData.company || '',\n  location: jobData.location || '',\n  description: jobData.description || '',\n  jobid: jobData.jobid || '',\n  applyLink: (jobData.applyLink || '').trim(),\n  addedAt: addedAt\n});\n\nreturn $input.all();"
       },
-      "id": "baa9fd31-08cd-47c1-9405-b0f8dbda7947",
+      "id": "cfd8146f-95f0-43cb-a0d5-0b8dcee7dd7e",
       "name": "Accumulate Raw Job",
       "type": "n8n-nodes-base.code",
       "position": [
-        1392,
-        0
+        688,
+        144
       ],
       "typeVersion": 2
     },
@@ -362,12 +361,12 @@
       "parameters": {
         "jsCode": "// BUILD BATCH PROMPT\nconst staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.newJobs || [];\n\nif (jobs.length === 0) {\n  return [{ json: { hasJobs: false } }];\n}\n\nconst resume = $('Extract from File').first().json.text || '';\nconst MAX_DESC = 1500;\n\nconst jobSections = jobs.map(job => {\n  const desc = (job.description || '').substring(0, MAX_DESC);\n  return `---JOB [id: ${job.jobid}]---\\nTitle: ${job.title}\\nCompany: ${job.company}\\nLocation: ${job.location}\\nDescription:\\n${desc}\\n---END JOB---`;\n}).join('\\n\\n');\n\nconst prompt = `You are a world-class technical recruiting analyst with deep expertise in software engineering hiring. Your task is to produce rigorous, calibrated match scores between a candidate's resume and multiple job descriptions in a single pass.\n\n## SCORING PHILOSOPHY\n- Be brutally honest. A score of 50 means \"coin flip\".\n- Reserve 85+ for near-perfect matches.\n- A score below 40 means significant gaps exist.\n- Score each job INDEPENDENTLY.\n\n## CANDIDATE RESUME\n${resume}\n\n## JOB POSTINGS TO EVALUATE (${jobs.length} job${jobs.length > 1 ? 's' : ''})\nScore EACH of the following job postings against the resume above.\n\n${jobSections}\n\n## RESPONSE FORMAT\nRespond with ONLY a valid JSON array — no markdown fences, no preamble, no trailing text. I just want the jobid and the score, NOTHING ELSE.\n\n[\\n  {\"jobid\": \"<exact id from above>\", \"score\": <total 0-100>},\\n  ...\\n]\\n\\nIMPORTANT: You MUST return an entry for EVERY job listed above. Do not skip any.`;\n\nreturn [{ json: { hasJobs: true, aiPrompt: prompt } }];"
       },
-      "id": "aff2c5e8-0723-4bdb-8b75-ec9bd5c2430c",
+      "id": "404795fe-fb21-4f97-825a-7d126be79e4c",
       "name": "Build Batch Prompt",
       "type": "n8n-nodes-base.code",
       "position": [
-        0,
-        352
+        -704,
+        496
       ],
       "typeVersion": 2
     },
@@ -400,10 +399,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        240,
-        352
+        -464,
+        496
       ],
-      "id": "57c1d9f8-30cf-4e8f-86e0-b18c449914b5",
+      "id": "5c5e6477-cfb6-4307-9952-53039704351f",
       "name": "Has New Jobs?"
     },
     {
@@ -411,13 +410,13 @@
         "promptType": "define",
         "text": "={{ $json.aiPrompt }}"
       },
-      "id": "67e3fabb-1242-487d-8775-2a7a169794ae",
+      "id": "22285d1c-dc42-4a6b-9b41-ee997d213cce",
       "name": "Score All Jobs (AI)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
-        496,
-        304
+        -208,
+        448
       ],
       "retryOnFail": true,
       "waitBetweenTries": 5000,
@@ -428,13 +427,13 @@
       "parameters": {
         "options": {}
       },
-      "id": "f33b30df-2a78-4808-a6fa-dd13191670e0",
+      "id": "c2a10468-7259-4fe3-bb56-6c3a652f70ab",
       "name": "Google Gemini Chat Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1,
       "position": [
-        496,
-        512
+        -208,
+        656
       ],
       "retryOnFail": true,
       "waitBetweenTries": 5000,
@@ -449,14 +448,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// PARSE ALL SCORES\nconst staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.newJobs || [];\n\n// Parse AI response\nlet scores = {};\ntry {\n  const aiText = typeof $json.text === 'string' ? $json.text : (typeof $json.content === 'string' ? $json.content : '');\n\n  const cleaned = aiText\n    .replace(/```json\\n?/g, '')\n    .replace(/```/g, '')\n    .trim();\n\n  const parsed = JSON.parse(cleaned);\n  if (Array.isArray(parsed)) {\n    parsed.forEach(s => {\n      scores[String(s.jobid)] = s;\n    });\n  }\n} catch (err) {\n  // If parsing fails, all jobs get score null\n}\n\n// Merge scores with job data — output one item per job\nconst scoredJobs = jobs.map(job => {\n  const s = scores[String(job.jobid)] || {};\n  return {\n    json: {\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description,\n      jobid: job.jobid,\n      applyLink: job.applyLink,\n      score: s.score != null ? s.score : null,\n      scoreSummary: \"\"\n    }\n  };\n});\n\n// Store for telegram formatting later\nstaticData.scoredJobs = scoredJobs.map(j => ({ ...j.json }));\n\nreturn scoredJobs;"
+        "jsCode": "// PARSE ALL SCORES\nconst staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.newJobs || [];\n\n// Parse AI response\nlet scores = {};\ntry {\n  const aiText = typeof $json.text === 'string' ? $json.text : (typeof $json.content === 'string' ? $json.content : '');\n\n  const cleaned = aiText\n    .replace(/```json\\n?/g, '')\n    .replace(/```/g, '')\n    .trim();\n\n  const parsed = JSON.parse(cleaned);\n  if (Array.isArray(parsed)) {\n    parsed.forEach(s => {\n      scores[String(s.jobid)] = s;\n    });\n  }\n} catch (err) {\n  // If parsing fails, all jobs get score null\n}\n\n// Merge scores with job data — output one item per job\nconst scoredJobs = jobs.map(job => {\n  const s = scores[String(job.jobid)] || {};\n  return {\n    json: {\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description,\n      jobid: job.jobid,\n      applyLink: job.applyLink,\n      addedAt: job.addedAt || new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }),\n      score: s.score != null ? s.score : null,\n      scoreSummary: \"\"\n    }\n  };\n});\n\n// Store for telegram formatting later\nstaticData.scoredJobs = scoredJobs.map(j => ({ ...j.json }));\n\nreturn scoredJobs;"
       },
-      "id": "8dbc6a5e-2a59-4e22-84b5-362ac7b399e1",
+      "id": "bffa8682-4e49-4bdf-90f1-8fe7eafecd4d",
       "name": "Parse All Scores",
       "type": "n8n-nodes-base.code",
       "position": [
-        832,
-        304
+        128,
+        448
       ],
       "typeVersion": 2
     },
@@ -484,7 +483,8 @@
             "description": "={{ $json.description }}",
             "jobid": "={{ $json.jobid }}",
             "applyLink": "={{ $json.applyLink }}",
-            "score": "={{ $json.score }}"
+            "score": "={{ $json.score }}",
+            "addedAt": "={{ $json.addedAt }}"
           },
           "matchingColumns": [
             "jobid"
@@ -552,6 +552,15 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "addedAt",
+              "displayName": "addedAt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
             }
           ],
           "attemptToConvertTypes": false,
@@ -559,12 +568,12 @@
         },
         "options": {}
       },
-      "id": "fa184668-dcc7-4a7e-91e0-d52527bb8947",
+      "id": "6180c98f-0872-4b29-a734-246c70e6a1b8",
       "name": "Save All to Sheet",
       "type": "n8n-nodes-base.googleSheets",
       "position": [
-        992,
-        304
+        288,
+        448
       ],
       "typeVersion": 4.6,
       "credentials": {
@@ -578,12 +587,12 @@
       "parameters": {
         "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst jobs = staticData.scoredJobs || [];\n\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('en-IN', {\n  month: 'short', day: 'numeric',\n  hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'\n});\n\njobs.sort((a, b) => {\n  const scoreA = a.score != null ? a.score : -1;\n  const scoreB = b.score != null ? b.score : -1;\n  return scoreB - scoreA;\n});\n\nlet header = `\\u{1F3AF} *LinkedIn Job Scan*\\n`;\nheader += `\\u{1F4C5} ${dateStr} | *${jobs.length}* New Job${jobs.length > 1 ? 's' : ''}\\n`;\nheader += `\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\n\\n`;\n\nconst jobBlocks = jobs.map((job, i) => {\n  let block = `\\u{1F4BC} *${job.title}*\\n`;\n  block += `\\u{1F3E2} ${job.company}  \\u{1F4CD} ${job.location}\\n`;\n  if (job.score != null) {\n      function scoreEmoji(s) {\n          if (s >= 80) return '\\u{1F525}';\n          if (s >= 65) return '\\u{2B50}';\n          if (s >= 50) return '\\u{1F7E1}';\n          if (s >= 35) return '\\u{1F7E0}';\n          return '\\u{26AA}';\n      }\n      block += `\\u{1F916} Match Score: *${job.score}/100* ${scoreEmoji(job.score)}\\n`;\n  } else {\n      block += `\\u{1F916} Match Score: _[AI Unavailable]_\\n`;\n  }\n  block += `\\u{1F517} [Apply on LinkedIn](${job.applyLink})\\n\\n`;\n  return block;\n});\n\nconst MAX_LEN = 3800;\nconst messages = [];\nlet currentMsg = header;\n\nfor (const block of jobBlocks) {\n  if ((currentMsg + block).length > MAX_LEN) {\n    messages.push(currentMsg);\n    currentMsg = `\\u{1F3AF} *...continued (${messages.length + 1})*\\n\\n` + block;\n  } else {\n    currentMsg += block;\n  }\n}\n\ncurrentMsg += `\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\n`;\ncurrentMsg += `\\u{23F0} _Next scan in ~6 hours_`;\nmessages.push(currentMsg);\n\nstaticData.newJobs = [];\nstaticData.scoredJobs = [];\n\nreturn messages.map(msg => ({ json: { message: msg } }));"
       },
-      "id": "39718b60-f1cf-4420-994b-163e3b14ae2d",
+      "id": "cb1252f7-2682-4a28-b5f0-810e203e0e90",
       "name": "Format Summary",
       "type": "n8n-nodes-base.code",
       "position": [
-        1248,
-        304
+        544,
+        448
       ],
       "typeVersion": 2,
       "executeOnce": true
@@ -597,12 +606,12 @@
           "parse_mode": "Markdown"
         }
       },
-      "id": "f38521e9-a7e2-457c-a73f-139bb5798f74",
+      "id": "3534a699-097e-487b-ac4f-2d0df927ac3d",
       "name": "Send Job Summary",
       "type": "n8n-nodes-base.telegram",
       "position": [
-        1696,
-        384
+        992,
+        528
       ],
       "webhookId": "17b9ebe8-c8d4-4bd9-ad20-45842ddc2c00",
       "typeVersion": 1.2,
@@ -617,12 +626,12 @@
       "parameters": {
         "jsCode": "// No new jobs found — send a short status message\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('en-IN', {\n  weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',\n  hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'\n});\n\nconst msg = `\\u{1F50D} *LinkedIn Job Scan Complete*\\n\\u{1F4C5} ${dateStr}\\n\\n\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\u{2501}\\n\\nNo new jobs found this cycle.\\nAll scraped jobs already exist in your sheet.\\n\\n\\u{23F0} _Next scan in ~6 hours_`;\n\nreturn [{ json: { message: msg } }];"
       },
-      "id": "57baec43-1a3a-4f90-8372-0564a8079b3f",
+      "id": "473c5fdf-622b-4568-83d5-e7da14b572fe",
       "name": "Format No Jobs",
       "type": "n8n-nodes-base.code",
       "position": [
-        320,
-        672
+        -384,
+        816
       ],
       "typeVersion": 2
     },
@@ -631,12 +640,12 @@
         "content": "Workflow runs every 6 hours.\nChange interval as needed.",
         "height": 260
       },
-      "id": "a11b998e-dd64-42ca-abff-82b8398a5c78",
+      "id": "b6aac80a-35e8-422d-80dd-38d837842058",
       "name": "Sticky Note",
       "type": "n8n-nodes-base.stickyNote",
       "position": [
-        -2368,
-        64
+        -3072,
+        208
       ],
       "typeVersion": 1
     },
@@ -646,12 +655,12 @@
         "height": 260,
         "color": 4
       },
-      "id": "8901da7c-6cf4-48c6-a2c4-2dcc3d4d8908",
+      "id": "443e5994-003a-4d17-802d-a550271b3c00",
       "name": "Sticky Note1",
       "type": "n8n-nodes-base.stickyNote",
       "position": [
-        -2096,
-        64
+        -2800,
+        208
       ],
       "typeVersion": 1
     },
@@ -661,12 +670,12 @@
         "height": 260,
         "color": 5
       },
-      "id": "88308402-cb82-437f-a732-5323ea9d5c0c",
+      "id": "b9374a86-24be-4a90-a7f6-4e45b4ac49ae",
       "name": "Sticky Note2",
       "type": "n8n-nodes-base.stickyNote",
       "position": [
-        -1728,
-        64
+        -2432,
+        208
       ],
       "typeVersion": 1
     },
@@ -676,12 +685,12 @@
         "height": 260,
         "width": 180
       },
-      "id": "2d691705-5f18-449f-afbe-4877dddef79c",
+      "id": "39b19c41-9679-4586-9938-f298f0b599d7",
       "name": "Sticky Note4",
       "type": "n8n-nodes-base.stickyNote",
       "position": [
-        -992,
-        64
+        -1696,
+        208
       ],
       "typeVersion": 1
     },
@@ -701,12 +710,12 @@
         },
         "options": {}
       },
-      "id": "6a81e247-882f-46cd-bd9a-c07aad605a70",
+      "id": "62c9c4f4-fe65-44ad-95d7-c132fa8b0811",
       "name": "Get Companies",
       "type": "n8n-nodes-base.googleSheets",
       "position": [
-        -1360,
-        160
+        -1904,
+        288
       ],
       "typeVersion": 4.6,
       "credentials": {
@@ -732,12 +741,12 @@
         },
         "options": {}
       },
-      "id": "c0nf1g00-0000-4000-8000-000000000001",
+      "id": "572089ee-e3b7-4c6b-b821-004d76b468a4",
       "name": "Get Config",
       "type": "n8n-nodes-base.googleSheets",
       "position": [
-        -1520,
-        360
+        -2096,
+        288
       ],
       "typeVersion": 4.6,
       "alwaysOutputData": true,
@@ -1062,13 +1071,12 @@
   "active": true,
   "settings": {
     "executionOrder": "v1",
-    "binaryMode": "separate",
-    "availableInMCP": false
+    "binaryMode": "separate"
   },
-  "versionId": "9358b4d9-1053-4c82-a1fe-74a9fecd8af5",
+  "versionId": "c1bcd9da-424a-48e7-af16-6c1e33bcd9b1",
   "meta": {
     "instanceId": "05c87cc7859a40e88831de8642113b4acab5c0d8094bc2e657f887ff1e7eddcc"
   },
-  "id": "EEPT9x984RaWdrEl",
+  "id": "xSxzAJjcxEbdTUMN",
   "tags": []
 }
