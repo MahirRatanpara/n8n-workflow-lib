@@ -50,7 +50,7 @@ set +a
 N8N_SERVICE_USER="${N8N_SERVICE_USER:-n8n}"
 N8N_USER_FOLDER="${N8N_USER_FOLDER:-/opt/n8n}"
 N8N_PORT="${N8N_PORT:-5678}"
-GENERIC_TIMEZONE="${GENERIC_TIMEZONE:-UTC}"
+GENERIC_TIMEZONE="${GENERIC_TIMEZONE:-Asia/Kolkata}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 SKIP_DNS_CHECK="${SKIP_DNS_CHECK:-false}"
 BASIC_AUTH="${BASIC_AUTH:-false}"
@@ -273,6 +273,8 @@ cat <<DONE
         https://${DOMAIN}/rest/oauth2-credential/callback
    3. Open each imported workflow and select the reconnected credential.
    4. Activate the workflows you want running.
+   5. Outreach: run "Outreach - Setup (run once)" manually, then follow
+      outreach/README.md (FullEnrich credential, templates, go-live steps).
 
  Handy commands:
    systemctl status n8n

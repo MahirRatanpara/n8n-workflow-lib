@@ -1,0 +1,12 @@
+{
+  "name": "outreach-engine",
+  "private": true,
+  "description": "Generator and tests for the Outreach n8n workflows",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
