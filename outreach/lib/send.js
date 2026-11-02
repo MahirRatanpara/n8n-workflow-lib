@@ -65,6 +65,9 @@ function recordMail({ item, response, mode, now, headers, idColumns, subject }) 
   const msg = (response && response.message) || response || {};
   const threadId = str(msg.threadId) || str(response && response.threadId) || str(item.threadId);
   const messageId = str(msg.id) || str(response && response.id);
+  // drafts.create answers { id: <draft id>, message: { id, threadId } }; the
+  // draft id is what "Outreach - Send Drafts Now" sends.
+  const draftId = mode === 'DRAFT' ? str(response && response.id) : '';
   const fields = {};
   for (const [k, v] of Object.entries(item.outreachFields || {})) {
     fields[k] = v === '__SENT_AT__' ? sentAt : v === '__THREAD_ID__' ? threadId : v === '__MESSAGE_ID__' ? messageId : v;
@@ -87,6 +90,7 @@ function recordMail({ item, response, mode, now, headers, idColumns, subject }) 
       logId, sentAt, outreachId: item.outreachId, recruiterId: item.recruiterId, jobId: item.jobId,
       templateCode: item.templateCode, kind: item.kind, mode, step: item.stepAfter, email: item.to,
       threadId, messageId, result: 'OK', note: '',
+      draftId, delivery: mode === 'DRAFT' ? 'DRAFTED' : 'SENT', scheduledFor: '', deliveredAt: mode === 'DRAFT' ? '' : sentAt,
     }));
   }
   return { data, threadId, messageId, sentAt };

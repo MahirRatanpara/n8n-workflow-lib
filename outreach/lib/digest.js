@@ -19,10 +19,11 @@ function formatDigest({ digest, results, mode }) {
   const sent = results.filter(r => r.result === 'SENT');
   const skipped = results.filter(r => r.result === 'SKIPPED');
   const verb = mode === 'SEND' ? 'sent' : mode === 'DRAFT' ? 'drafted' : 'planned (dry run)';
+  const preview = mode !== 'DRY_RUN' && digest.alerts.some(a => /^Outside the send window/.test(a));
   L.push(`📬 Outreach ${digest.today} · mode ${mode}`);
   if (!digest.sendDay) L.push('Not a send day (weekend/holiday): reply sync only.');
   const done = mode === 'DRY_RUN' ? digest.total : sent.length;
-  L.push(`${done} ${verb} of ${digest.total} planned · cap ${digest.cap}`);
+  L.push(preview ? `${digest.total} planned · nothing ${verb}, outside the send window · cap ${digest.cap}` : `${done} ${verb} of ${digest.total} planned · cap ${digest.cap}`);
   const parts = Object.entries(digest.counts).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${KIND_LABEL[k]}`);
   if (parts.length) L.push(parts.join(' · '));
   if (digest.events.length) {
@@ -36,13 +37,17 @@ function formatDigest({ digest, results, mode }) {
   if (digest.picked.length) {
     L.push('', 'Jobs picked:');
     for (const p of digest.picked) {
-      L.push(`• ${p.prio ? '⭐ ' : ''}${p.company}: ${p.title} (${p.score === null || p.score === undefined ? 'no score' : p.score}${p.scoreSource === 'ai' ? ' AI' : ''}) → ${p.fresh} new, ${p.merges} new-role${p.siblings ? ` · ${p.siblings} sibling jobs skipped` : ''}`);
+      L.push(`• ${p.prio ? '⭐ ' : ''}${p.company}: ${p.title} (${p.score === null || p.score === undefined ? 'no score' : p.score}) → ${p.fresh} new, ${p.merges} new-role${p.siblings ? ` · ${p.siblings} sibling jobs skipped` : ''}`);
     }
   }
   const jc = Object.entries(digest.jobCounts).filter(([k]) => k !== 'PICKED').map(([k, n]) => `${n} ${k}`);
   if (jc.length) L.push(`Other jobs: ${jc.join(', ')}`);
   if (digest.deferredJobs.length) L.push(`Deferred to next run (budget): ${digest.deferredJobs.join('; ')}`);
   if (digest.deferredCommitments) L.push(`${digest.deferredCommitments} due follow-ups wait a day (cap reached).`);
+  if (digest.counts.COLD_NEW || (digest.coldHeldForOpenings || []).length) {
+    const held = digest.coldHeldForOpenings || [];
+    L.push(`Cold intros: ${digest.counts.COLD_NEW} sent to companies with no opening in the last days${held.length ? ` · held back (they have an opening): ${held.slice(0, 8).join(', ')}${held.length > 8 ? '…' : ''}` : ''}`);
+  }
   if (digest.noContacts.length) L.push(`🔎 Find recruiters for: ${digest.noContacts.join(', ')}`);
   if (digest.lowPools.length) L.push(`⚠️ Low recruiter pool: ${digest.lowPools.join(', ')}`);
   if (digest.unresolved.length) L.push(`❓ Unknown company names (add to Companies.Aliases): ${digest.unresolved.join(', ')}`);

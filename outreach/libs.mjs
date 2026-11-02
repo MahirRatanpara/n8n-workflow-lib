@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const LIB_ORDER = ['util', 'schema', 'company', 'mail', 'sync', 'planner', 'ai', 'send', 'digest', 'enrich', 'setup', 'commands'];
+export const LIB_ORDER = ['util', 'schema', 'company', 'mail', 'sync', 'planner', 'send', 'digest', 'enrich', 'setup', 'commands', 'drafts'];
 
 export function libSource(names = LIB_ORDER) {
   return names.map(n => readFileSync(join(here, 'lib', `${n}.js`), 'utf8')).join('\n\n');

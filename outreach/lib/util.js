@@ -199,3 +199,11 @@ function columnsToRows(names, valueRanges) {
   }
   return rows;
 }
+
+// Business days to wait after mail number `stepAfter` of a thread: the
+// follow-up gaps, then exhaustAfterDays once the thread hits its cap.
+function gapAfterStep(cfg, stepAfter) {
+  const maxMails = cfgNum(cfg, 'maxMailsPerRecruiter', 4);
+  const gaps = cfgList(cfg, 'followupGapDays', '3,4,7').map(Number).filter(n => n > 0);
+  return stepAfter >= maxMails ? cfgNum(cfg, 'exhaustAfterDays', 7) : (gaps[stepAfter - 1] || gaps[gaps.length - 1] || 3);
+}
