@@ -58,7 +58,24 @@ function replySubject(subject) {
   return /^re:/i.test(s) ? s : `Re: ${s}`;
 }
 
-// Returns base64url "raw" for users.messages.send / drafts.create.
+// Plain text → HTML that keeps the template's own line breaks and nothing
+// else. Gmail hard-wraps text/plain drafts at ~78 characters when they are
+// sent from its composer, which turned paragraphs into ragged short lines;
+// with an HTML part the composer opens in rich mode and lines reflow.
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function textToHtml(text) {
+  const linked = escapeHtml(String(text || '').replace(/\r\n/g, '\n'))
+    .replace(/\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)\]]/g, u => `<a href="${u}">${u}</a>`)
+    .replace(/(^|[\s(])((?:www\.)?linkedin\.com\/[^\s<]+[^\s<.,;:!?)\]])/g, (m, pre, u) => `${pre}<a href="https://${u}">${u}</a>`)
+    .replace(/(^|[\s(])([\w.+-]+@[\w-]+(?:\.[\w-]+)+)/g, (m, pre, e) => `${pre}<a href="mailto:${e}">${e}</a>`);
+  return `<div dir="ltr">${linked.split('\n').join('<br>\n')}</div>`;
+}
+
+// Returns base64url "raw" for users.messages.send / drafts.create:
+// multipart/alternative (text + HTML), inside multipart/mixed when the
+// resume is attached.
 function buildRawMessage({ fromName, fromEmail, to, subject, body, inReplyTo, references, attachment }) {
   const from = fromName ? `${encodeHeaderWord(fromName)} <${fromEmail}>` : fromEmail;
   const head = [
@@ -70,29 +87,37 @@ function buildRawMessage({ fromName, fromEmail, to, subject, body, inReplyTo, re
   if (inReplyTo) head.push(`In-Reply-To: ${inReplyTo}`);
   if (references || inReplyTo) head.push(`References: ${[references, inReplyTo].filter(Boolean).join(' ').trim()}`);
   const text = String(body || '').replace(/\r?\n/g, '\r\n');
+  const seed = hashId('', subject + to + text.length);
+  const alt = 'a_' + seed;
+  const alternative = [
+    `Content-Type: multipart/alternative; boundary="${alt}"`, '',
+    `--${alt}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64', '',
+    wrap76(b64Utf8(text)),
+    `--${alt}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64', '',
+    wrap76(b64Utf8(textToHtml(body))),
+    `--${alt}--`,
+  ];
   let mime;
   if (attachment && attachment.b64) {
-    const boundary = 'b_' + hashId('', subject + to + text.length);
+    const mixed = 'm_' + seed;
     const name = encodeHeaderWord(attachment.name || 'resume.pdf');
     mime = head.concat([
-      `Content-Type: multipart/mixed; boundary="${boundary}"`, '',
-      `--${boundary}`,
-      'Content-Type: text/plain; charset="UTF-8"',
-      'Content-Transfer-Encoding: base64', '',
-      wrap76(b64Utf8(text)),
-      `--${boundary}`,
+      `Content-Type: multipart/mixed; boundary="${mixed}"`, '',
+      `--${mixed}`,
+      ...alternative,
+      `--${mixed}`,
       `Content-Type: ${attachment.mimeType || 'application/pdf'}; name="${name}"`,
       `Content-Disposition: attachment; filename="${name}"`,
       'Content-Transfer-Encoding: base64', '',
       wrap76(String(attachment.b64).replace(/\s+/g, '')),
-      `--${boundary}--`, '',
+      `--${mixed}--`, '',
     ]).join('\r\n');
   } else {
-    mime = head.concat([
-      'Content-Type: text/plain; charset="UTF-8"',
-      'Content-Transfer-Encoding: base64', '',
-      wrap76(b64Utf8(text)), '',
-    ]).join('\r\n');
+    mime = head.concat(alternative, ['']).join('\r\n');
   }
   return b64ToUrl(bytesToB64(utf8Bytes(mime)));
 }

@@ -33,13 +33,10 @@ function planOutreach(input) {
   const { cfg, today, contacts, outreach, mailLog, jobs, companyIndex } = input;
   const nowTs = input.nowTs || istTsStr(new Date());
   const templates = input.templates || {};
-  const ai = input.ai || { scores: {}, pitches: {} };
   const sync = input.sync || { outreachChanges: new Map(), contactChanges: new Map(), events: [] };
 
   const sendDays = cfgSendDays(cfg), holidays = cfgHolidays(cfg);
   const maxMails = cfgNum(cfg, 'maxMailsPerRecruiter', 4);
-  const gaps = cfgList(cfg, 'followupGapDays', '3,4,7').map(Number).filter(n => n > 0);
-  const exhaustAfter = cfgNum(cfg, 'exhaustAfterDays', 7);
   const newPerJob = cfgNum(cfg, 'newPerJob', 4);
   const maxPerJob = cfgNum(cfg, 'maxPerJob', 7);
   const cap = cfgNum(cfg, 'dailySendCap', 15);
@@ -47,8 +44,8 @@ function planOutreach(input) {
   const maxAge = cfgNum(cfg, 'maxJobAgeDays', 3);
   const minScore = cfgNum(cfg, 'minOutreachScore', 80);
   const coldPerDay = cfgNum(cfg, 'coldPerDay', 0);
-  const reserve = cfgNum(cfg, 'reserveFreshPerCompany', 4);
-  const quietDays = cfgNum(cfg, 'coldCompanyQuietDays', 14);
+  const noOpeningDays = cfgNum(cfg, 'coldNoOpeningDays', 5);
+  const coldPerCompany = Math.max(1, cfgNum(cfg, 'coldPerCompanyPerDay', 2));
   const reengageAfter = cfgNum(cfg, 'reengageAfterDays', 90);
   const reengageMin = cfgNum(cfg, 'reengageMinScore', 90);
   const sendable = new Set(cfgList(cfg, 'sendableEmailStatuses', 'VALID,PROBABLE').map(s => s.toUpperCase()));
@@ -78,7 +75,11 @@ function planOutreach(input) {
   }
 
   const stateOf = o => str(o.state).toUpperCase();
+  // An address on hold (legacy recruiters, do-not-contact) stays blocked even
+  // if Cowork adds the same person again before enrichment flags the duplicate.
+  const heldEmails = new Set(contacts.filter(c => isYes(c.hold)).map(c => normEmail(c.email)).filter(Boolean));
   const isSendableContact = c => !!c && isYes(c.isRelevant) && !isYes(c.hold) && !!normEmail(c.email) &&
+    !heldEmails.has(normEmail(c.email)) &&
     sendable.has(str(c.emailStatus).toUpperCase()) && str(c.enrichStatus).toUpperCase() !== 'DUPLICATE';
 
   // 1 ── hygiene: holds, bounces, duplicate threads, finished threads ────────
@@ -97,9 +98,12 @@ function planOutreach(input) {
     activeByRecruiter.set(rid, o);
   }
 
-  const logged = new Set(mailLog.filter(l => str(l.result).toUpperCase() !== 'FAILED').map(l => `${str(l.outreachId)}#${str(l.step)}`));
+  // discarded drafts (deleted in Gmail without sending) never went out
+  const delivered = l => str(l.result).toUpperCase() !== 'FAILED' && str(l.delivery).toUpperCase() !== 'DISCARDED';
+  const logged = new Set(mailLog.filter(delivered).map(l => `${str(l.outreachId)}#${str(l.step)}`));
   const outreachByRecruiter = new Map();
   for (const o of oById.values()) {
+    if (stateOf(o) === 'DISCARDED') continue;                // a first email that was never sent
     const rid = str(o.recruiterId);
     if (!outreachByRecruiter.has(rid)) outreachByRecruiter.set(rid, []);
     outreachByRecruiter.get(rid).push(o);
@@ -147,10 +151,8 @@ function planOutreach(input) {
       if (!prio && (!added || businessDaysBetween(added, today, sendDays, holidays) > maxAge)) {
         setJob(j, { outreachStatus: JOB_STATUS.EXPIRED, outreachAt: nowTs, ...extra }); countJob('EXPIRED'); continue;
       }
-      let score = numOrNull(j.score);
-      let scoreSource = 'sheet';
-      if (score === null && ai.scores && ai.scores[str(j.jobid)] !== undefined) { score = numOrNull(ai.scores[str(j.jobid)]); scoreSource = 'ai'; }
-      pushTo(groups, cid, { job: j, cid, prio, score, eff: score === null ? 0 : score, scoreSource, extra });
+      const score = numOrNull(j.score); // a missing score counts as 0
+      pushTo(groups, cid, { job: j, cid, prio, score, eff: score === null ? 0 : score, extra });
     }
   }
   const byRank = (a, b) => (b.prio - a.prio) || (b.eff - a.eff) || cmpJobIdDesc(a.job.jobid, b.job.jobid);
@@ -220,20 +222,32 @@ function planOutreach(input) {
   }
 
   // 7 ── cold intros (off unless coldPerDay > 0) ─────────────────────────────
+  // A company with an opening we track (any Result job added in the last
+  // coldNoOpeningDays days) gets opening mails, never cold ones. Only
+  // companies with no recent opening get cold intros, to the recruiters we
+  // already have there and have never written to.
+  const lastOpening = new Map();
+  for (const j of jobs) {
+    const cid = str(j.companyId) || resolveCompany(companyIndex, j.company);
+    const d = toIstDate(j.addedAt);
+    if (cid && d && (!lastOpening.has(cid) || d > lastOpening.get(cid))) lastOpening.set(cid, d);
+  }
+  const hasRecentOpening = cid => lastOpening.has(cid) && daysBetween(lastOpening.get(cid), today) < noOpeningDays;
   const coldPicks = [];
+  const coldSkipped = new Set();
   if (sendDay && coldPerDay > 0 && budget > 0) {
     const busy = new Set(jobPlans.map(p => p.e.cid));
     const queues = [...freshByCompany.entries()]
-      .filter(([cid]) => !busy.has(cid) && !(lastWave.has(cid) && daysBetween(lastWave.get(cid), today) < quietDays))
+      .filter(([cid]) => { const skip = busy.has(cid) || hasRecentOpening(cid); if (skip) coldSkipped.add(cid); return !skip; })
       .map(([cid, list]) => ({ cid, list: list.filter(c => !usedContacts.has(str(c.recruiterId))), taken: 0 }))
-      .filter(q => q.list.length > reserve)
+      .filter(q => q.list.length > 0)
       .sort((a, b) => b.list.length - a.list.length);
     let n = Math.min(coldPerDay, budget), moved = true;
     while (n > 0 && moved) {
       moved = false;
       for (const q of queues) {
         if (n <= 0) break;
-        if (q.list.length - q.taken > reserve) {
+        if (q.taken < Math.min(q.list.length, coldPerCompany)) {
           const c = q.list[q.taken++];
           usedContacts.add(str(c.recruiterId));
           coldPicks.push({ kind: 'COLD_NEW', c, cid: q.cid });
@@ -246,7 +260,7 @@ function planOutreach(input) {
 
   // 8 ── turn decisions into fully rendered mails ────────────────────────────
   const queue = [];
-  const nextGap = stepAfter => (stepAfter >= maxMails ? exhaustAfter : (gaps[stepAfter - 1] || gaps[gaps.length - 1] || 3));
+  const nextGap = stepAfter => gapAfterStep(cfg, stepAfter);
   const ctxFor = (c, job, cid, jobId, role) => ({
     FirstName: firstNameOf(c.name) || 'there',
     LastName: str(c.name).split(/\s+/).slice(1).join(' '),
@@ -255,7 +269,7 @@ function planOutreach(input) {
     Role: str(job && job.title) || str(role) || 'open',
     JobURL: jobUrlOf(job, jobId),
     JobId: str(jobId),
-    PitchLine: (jobId && ai.pitches && ai.pitches[str(jobId)]) || '',
+    PitchLine: '', // templates are static; an old {{PitchLine}} line renders empty and is dropped
     ApplyPhrase: job && isYes(job.applied) ? "I've applied for it" : "I'm applying for it now",
     SenderName: cfgStr(cfg, 'senderName', ''),
     ResumeURL: cfgStr(cfg, 'resumeLink', ''),
@@ -331,7 +345,7 @@ function planOutreach(input) {
       setJob(p.e.job, { outreachStatus: JOB_STATUS.PICKED, outreachAt: nowTs, ...p.e.extra }); countJob('PICKED');
       picked.push({
         company: companyName(p.e.cid, p.e.job.company), title: str(p.e.job.title), jobId: str(p.e.job.jobid),
-        score: p.e.score, scoreSource: p.e.scoreSource, prio: p.e.prio, fresh: p.freshTaken || 0,
+        score: p.e.score, prio: p.e.prio, fresh: p.freshTaken || 0,
         merges: queue.filter(q => q.kind === 'NEW_ROLE' && q.jobId === str(p.e.job.jobid)).length,
         freshLeft: p.freshLeft, siblings: p.e.siblings || 0,
       });
@@ -346,8 +360,8 @@ function planOutreach(input) {
     .map(([row]) => jobs.find(j => j._row === row)).filter(Boolean)
     .map(j => companyName(str(j.companyId) || resolveCompany(companyIndex, j.company), j.company));
   const since = addCalendarDays(today, -30);
-  const sent30 = mailLog.filter(l => toIstDate(l.sentAt) >= since && str(l.result).toUpperCase() === 'OK').length;
-  const threads30 = [...oById.values()].filter(o => toIstDate(o.createdAt) >= since);
+  const sent30 = mailLog.filter(l => toIstDate(l.sentAt) >= since && str(l.result).toUpperCase() === 'OK' && delivered(l)).length;
+  const threads30 = [...oById.values()].filter(o => toIstDate(o.createdAt) >= since && stateOf(o) !== 'DISCARDED');
   const rate = type => {
     const t = threads30.filter(o => str(o.originType).toUpperCase() === type);
     const r = t.filter(o => stateOf(o) === 'REPLIED').length;
@@ -368,6 +382,7 @@ function planOutreach(input) {
       events: sync.events || [],
       stats: { sent30, job: rate('JOB'), cold: rate('COLD') },
       lowPools: picked.filter(p => p.freshLeft < newPerJob).map(p => `${p.company} (${p.freshLeft} fresh left)`),
+      coldHeldForOpenings: [...coldSkipped].map(cid => companyName(cid, '')).filter(Boolean),
     },
   };
 }

@@ -12,19 +12,21 @@ import { loadLibs } from './libs.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..');
 const L = loadLibs();
-const OUT = L.SHEETS.outreachDb, JOBS = L.SHEETS.jobsDb;
+const DB = L.SHEETS.db, LEGACY = L.SHEETS.legacy; // every tab lives in "n8n - Switch"
 
 const IDS = {
   setup: 'outreachSetupV2a', enrich: 'outreachEnrichV2', sync: 'outreachSyncV2ab',
-  daily: 'outreachDailyV2a', commands: 'outreachTgCmdV2a', error: 'outreachErrorV2a',
+  daily: 'outreachDailyV2a', commands: 'outreachTgCmdV2a', error: 'outreachErrorV2a', sendNow: 'outreachSendNowV2',
 };
+// Credential ids on the n8n-job-switch.cloud instance, so imported workflows
+// connect without re-selecting credentials.
 const CRED = {
-  sheets: { googleSheetsOAuth2Api: { id: 'IJGwJa8hH4IF7wFD', name: 'Google Sheets account' } },
-  drive: { googleDriveOAuth2Api: { id: '2SF7ob7VCnwgbeRC', name: 'Google Drive account' } },
-  gmail: { gmailOAuth2: { id: 'nFbH9p01avi2rD5X', name: 'Gmail account' } },
-  telegram: { telegramApi: { id: 'rJEQhUwlXhIIhraH', name: 'Telegram account' } },
-  gemini: { googlePalmApi: { id: 'uMArafjKFXzel0Ev', name: 'Google Gemini(PaLM) Api account' } },
-  fullenrich: { httpHeaderAuth: { id: 'fullEnrichApiKey', name: 'FullEnrich API' } },
+  sheets: { googleSheetsOAuth2Api: { id: 'udx1X72pWQTuGvuL', name: 'Google Sheets account' } },
+  drive: { googleDriveOAuth2Api: { id: 'ER9k4sKsFQ9r4yoh', name: 'Google Drive account' } },
+  gmail: { gmailOAuth2: { id: 'AVvifmm3OrVT8YbT', name: 'Gmail account' } },
+  telegram: { telegramApi: { id: 'cRXChxYzFgkyw36p', name: 'Telegram account' } },
+  // FullEnrich wants "Authorization: Bearer <key>": a Bearer Auth credential holding just the key.
+  fullenrich: { httpBearerAuth: { id: 'OqREj5ItRZtm55Kc', name: 'Bearer Auth account' } },
 };
 const CRED_TYPE = { sheets: 'googleSheetsOAuth2Api', gmail: 'gmailOAuth2' };
 const DEFAULT_CHAT = '8126636123';
@@ -32,9 +34,9 @@ const DEFAULT_CHAT = '8126636123';
 // ── library inlining ────────────────────────────────────────────────────────
 const LIB_DEPS = {
   util: [], schema: [], company: ['util'], mail: ['util'], sync: ['util', 'mail'],
-  planner: ['util', 'schema', 'company', 'mail'], ai: ['util', 'company', 'planner'],
+  planner: ['util', 'schema', 'company', 'mail'],
   send: ['util', 'mail', 'sync'], digest: ['util'], enrich: ['util', 'company'],
-  setup: ['util', 'schema', 'company', 'mail', 'sync'], commands: ['util'],
+  setup: ['util', 'schema', 'company'], commands: ['util'], drafts: ['util', 'mail'],
 };
 const ORDER = Object.keys(LIB_DEPS);
 function libsFor(names) {
@@ -62,7 +64,7 @@ function code(name, body, { libs = ['util'], each = false, ...opts } = {}) {
 }
 function http(name, { method = 'GET', url, cred = 'sheets', body, retry = true, ...opts }) {
   const auth = cred === 'fullenrich'
-    ? { authentication: 'genericCredentialType', genericAuthType: 'httpHeaderAuth' }
+    ? { authentication: 'genericCredentialType', genericAuthType: 'httpBearerAuth' }
     : cred ? { authentication: 'predefinedCredentialType', nodeCredentialType: CRED_TYPE[cred] } : {};
   return {
     name, type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2,
@@ -89,10 +91,13 @@ function iff(name, expr) {
     },
   };
 }
+// n8n's Telegram node parses Markdown unless told otherwise; our messages are
+// plain text, so send them as HTML with the three HTML characters escaped.
+const TG_TEXT = expr => C(`String(${expr} || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')`);
 function telegram(name, chatExpr) {
   return {
     name, type: 'n8n-nodes-base.telegram', typeVersion: 1.2,
-    parameters: { chatId: C(chatExpr), text: '={{ $json.message }}', additionalFields: { appendAttribution: false, disable_web_page_preview: true } },
+    parameters: { chatId: C(chatExpr), text: TG_TEXT('$json.message'), additionalFields: { appendAttribution: false, disable_web_page_preview: true, parse_mode: 'HTML' } },
     credentials: CRED.telegram, webhookId: uuid(`tg-${name}`),
   };
 }
@@ -132,8 +137,9 @@ class Workflow {
   }
 }
 
-// Shared read of the outreach spreadsheet.
-const outreachRanges = tabs => L.sheetsBatchGetUrl(OUT, tabs.map(t => `${L.quoteTab(t)}!A:Z`));
+// One batchGet against "n8n - Switch". Plain tab names read A:Z; entries
+// that already carry a range (e.g. "'Result'!1:1") are used as given.
+const dbRanges = tabs => L.sheetsBatchGetUrl(DB, tabs.map(t => (t.includes('!') ? t : `${L.quoteTab(t)}!A:Z`)));
 const LIST_GMAIL = `https://gmail.googleapis.com/gmail/v1/users/me`;
 const THREAD_URL = (expr) => `=${LIST_GMAIL}/threads/{{ ${expr} }}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=References&metadataHeaders=Auto-Submitted&metadataHeaders=X-Autoreply&metadataHeaders=X-Failed-Recipients`;
 
@@ -142,14 +148,14 @@ function addSyncNodes(wf, x, y, after) {
   const listRecent = wf.add(http('List Recent Inbound', { url: C(`${P}.recentUrl`), cred: 'gmail', onError: 'continueRegularOutput', executeOnce: true }), x, y);
   const listBounces = wf.add(http('List Bounces', { url: C(`${P}.bounceUrl`), cred: 'gmail', onError: 'continueRegularOutput', executeOnce: true }), x + 220, y);
   const toCheck = wf.add(code('Threads To Check', `
-const outreach = parseTable(rangesByTab($('Load Outreach DB').first().json)['Outreach']).rows;
+const outreach = parseTable(rangesByTab($('Load DB').first().json)['Outreach']).rows;
 const ids = threadsToFetch({ recent: $('List Recent Inbound').first().json, bounces: $('List Bounces').first().json, outreach });
 return ids.length ? ids.map(threadId => ({ json: { threadId } })) : [{ json: { threadId: '' } }];`, { libs: ['sync'] }), x + 440, y);
   const anyThreads = wf.add(iff('Any Threads?', '!!$json.threadId'), x + 660, y);
   const getThreads = wf.add(http('Get Threads', { url: THREAD_URL('$json.threadId'), cred: 'gmail', onError: 'continueRegularOutput' }), x + 880, y - 100);
   const syncNode = wf.add(code('Sync Replies', `
 const P = ${P};
-const db = rangesByTab($('Load Outreach DB').first().json);
+const db = rangesByTab($('Load DB').first().json);
 const threads = $('Get Threads').isExecuted ? $('Get Threads').all().map(i => i.json).filter(t => t && Array.isArray(t.messages)) : [];
 const res = syncThreads({ threads, outreach: parseTable(db['Outreach']).rows, contacts: parseTable(db['Contacts']).rows, myEmail: P.cfg.myEmail, today: P.today, cfg: P.cfg });
 return [{ json: { outreachChanges: [...res.outreachChanges], contactChanges: [...res.contactChanges], events: res.events, threadsChecked: threads.length } }];`, { libs: ['sync'] }), x + 1100, y);
@@ -161,7 +167,7 @@ return [{ json: { outreachChanges: [...res.outreachChanges], contactChanges: [..
 }
 const parseDbCommon = `
 const now = new Date();
-const db = rangesByTab($('Load Outreach DB').first().json);
+const db = rangesByTab($('Load DB').first().json);
 const cfg = parseConfig(db['Outreach Config']);
 const lookback = cfgNum(cfg, 'replyLookbackDays', 3);
 const gmailList = q => 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=500&q=' + encodeURIComponent(q);
@@ -174,31 +180,26 @@ const today = istDateStr(now), nowTs = istTsStr(now);`;
 // ═════════════════════════════════════════════════════════════════════════════
 function dailyRun() {
   const wf = new Workflow('daily', 'Outreach - Daily Run');
-  wf.add(sticky('About', '## Outreach - Daily Run\nWeekdays 09:30 IST.\n\n1. Load sheets → reply/bounce sync\n2. Gemini: score null jobs + one-line pitch\n3. Plan: settle jobs, NEW_ROLE merges, follow-ups, budget, fresh threads, cold\n4. Write state + **Outreach Plan** tab\n5. Send loop (DRAFT/SEND only): window gate → thread re-check → Gmail → Mail Log + Outreach row → 60–180s jitter\n6. Telegram digest\n\nAll knobs live in the **Outreach Config** tab. Logic: `outreach/lib/*.js`.', 520, 340), -1400, -420);
+  wf.add(sticky('About', '## Outreach - Daily Run\nWeekdays 09:30 IST. No AI: every mail is a fixed template from **Outreach Templates**.\n\n1. Load sheets → reply/bounce sync\n2. Plan: settle jobs (missing score = 0), NEW_ROLE merges, follow-ups, budget, fresh threads, cold\n3. Write state + **Outreach Plan** tab\n4. Send loop (DRAFT/SEND only): window gate → thread re-check → Gmail → Mail Log + Outreach row → 60–180s jitter\n5. Telegram digest\n\nAll knobs live in the **Outreach Config** tab. Logic: `outreach/lib/*.js`.', 520, 340), -1400, -420);
   const t1 = wf.add(cron('Weekdays 09:30 IST', '30 9 * * 1-5'), -1400, 0);
   const t2 = wf.add(manual(), -1400, 200);
-  const loadDb = wf.add(http('Load Outreach DB', { url: outreachRanges(['Outreach Config', 'Contacts', 'Outreach', 'Mail Log', 'Outreach Templates']) }), -1180, 100);
-  const loadHdr = wf.add(http('Load Job Headers', { url: L.sheetsBatchGetUrl(JOBS, ["'Result'!1:1", "'Companies'!A:Z"]) }), -960, 100);
+  const loadDb = wf.add(http('Load DB', { url: dbRanges(['Outreach Config', 'Contacts', 'Outreach', 'Mail Log', 'Outreach Templates', "'Result'!1:1", 'Companies']) }), -1180, 100);
   const jobCols = wf.add(code('Job Columns', `
 const hdr = rangesByTab($input.first().json);
 const header = ((hdr['Result'] || [])[0] || []).map(str);
-const need = ['title', 'company', 'jobid', 'applyLink', 'score', 'addedAt', 'companyId', 'isPriority', 'outreachStatus', 'outreachAt', 'applied', 'description'];
+const need = ['title', 'company', 'jobid', 'applyLink', 'score', 'addedAt', 'companyId', 'isPriority', 'outreachStatus', 'outreachAt', 'applied'];
 const required = ['title', 'company', 'jobid', 'companyId', 'isPriority', 'outreachStatus', 'outreachAt', 'applied'];
 const cols = {};
 for (const n of need) { const i = header.indexOf(n); if (i >= 0) cols[n] = colLetter(i); }
 const missing = required.filter(n => !cols[n]);
 if (missing.length) throw new Error('Result tab is missing columns ' + missing.join(', ') + '. Run the "Outreach - Setup" workflow first.');
-const names = Object.keys(cols).filter(n => n !== 'description');
-return [{ json: { cols, names, url: sheetsBatchGetUrl(SHEETS.jobsDb, names.map(n => "'Result'!" + cols[n] + ':' + cols[n])) } }];`, { libs: ['util', 'schema'] }), -740, 100);
+const names = Object.keys(cols);
+return [{ json: { cols, names, url: sheetsBatchGetUrl(SHEETS.db, names.map(n => "'Result'!" + cols[n] + ':' + cols[n])) } }];`, { libs: ['util', 'schema'] }), -740, 100);
   const loadCols = wf.add(http('Load Job Columns', { url: '={{ $json.url }}' }), -520, 100);
   const parseDb = wf.add(code('Parse DB', `${parseDbCommon}
 if (!str(cfg.setupCompletedAt)) throw new Error('Run the "Outreach - Setup" workflow once before the daily run.');
 if (!str(cfg.myEmail)) throw new Error('Outreach Config.myEmail is empty. Re-run "Outreach - Setup" or fill it in.');
 const J = $('Job Columns').first().json;
-const jobs = columnsToRows(J.names, $('Load Job Columns').first().json.valueRanges);
-const companyIndex = buildCompanyIndex(parseTable(rangesByTab($('Load Job Headers').first().json)['Companies']).rows);
-const cands = aiCandidates({ jobs, cfg, today, companyIndex });
-const descRanges = J.cols.description ? cands.map(c => "'Result'!" + J.cols.description + c.job._row) : [];
 const headers = {};
 for (const t of ['Contacts', 'Outreach', 'Mail Log']) headers[t] = ((db[t] || [])[0] || []).map(str);
 for (const [t, k] of [['Outreach', 'outreachId'], ['Mail Log', 'logId']]) if (headers[t].indexOf(k) < 0) throw new Error(t + ' tab has no ' + k + ' column. Run "Outreach - Setup".');
@@ -206,16 +207,12 @@ const idCol = t => colLetter(headers[t].indexOf(t === 'Outreach' ? 'outreachId' 
 return [{ json: {
   cfg, today, nowTs, mode: cfgStr(cfg, 'mode', 'DRY_RUN').toUpperCase(), headers, jobCols: J.cols, jobNames: J.names,
   recentUrl, bounceUrl,
-  descUrl: sheetsBatchGetUrl(SHEETS.jobsDb, descRanges.length ? descRanges : ["'Result'!A1"]),
-  descJobIds: cands.map(c => str(c.job.jobid)),
-  aiCandidates: cands.map(c => ({ jobid: str(c.job.jobid), title: str(c.job.title), company: str(c.job.company), needsScore: c.needsScore })),
-  idReadUrl: sheetsBatchGetUrl(SHEETS.outreachDb, ["'Outreach'!" + idCol('Outreach') + ':' + idCol('Outreach'), "'Mail Log'!" + idCol('Mail Log') + ':' + idCol('Mail Log')]),
-} }];`, { libs: ['util', 'schema', 'company', 'ai'] }), -300, 100);
+  idReadUrl: sheetsBatchGetUrl(SHEETS.db, ["'Outreach'!" + idCol('Outreach') + ':' + idCol('Outreach'), "'Mail Log'!" + idCol('Mail Log') + ':' + idCol('Mail Log')]),
+} }];`, { libs: ['util', 'schema'] }), -300, 100);
   wf.chain(t1, loadDb); wf.link(t2, loadDb);
-  wf.chain(loadDb, loadHdr, jobCols, loadCols, parseDb);
+  wf.chain(loadDb, jobCols, loadCols, parseDb);
   const syncNode = addSyncNodes(wf, -80, 100, parseDb);
 
-  const loadDesc = wf.add(http('Load Candidate Descriptions', { url: C(`${P}.descUrl`), executeOnce: true }), 1240, 100);
   const dl = wf.add({
     name: 'Download Resume', type: 'n8n-nodes-base.googleDrive', typeVersion: 3, executeOnce: true,
     parameters: { operation: 'download', fileId: { __rl: true, value: C(`${P}.cfg.resumeFileId`), mode: 'id' }, options: { binaryPropertyName: 'data' } },
@@ -228,67 +225,46 @@ let b64 = '';
 try { const buf = await this.helpers.getBinaryDataBuffer(0, 'data'); b64 = buf.toString('base64'); }
 catch (e) { if (bin.data && !/^filesystem/.test(String(bin.data))) b64 = String(bin.data); }
 return [{ json: { resumeB64: b64, fileName: bin.fileName || 'Resume.pdf', mimeType: bin.mimeType || 'application/pdf' }, binary: item.binary }];`), 1680, 100);
-  const extract = wf.add({ name: 'Extract Resume Text', type: 'n8n-nodes-base.extractFromFile', typeVersion: 1, parameters: { operation: 'pdf', options: {} }, onError: 'continueRegularOutput' }, 1900, 100);
-  const prepAi = wf.add(code('Prepare AI', `
-const P = ${P};
-if (!P.aiCandidates.length) return [{ json: { needsAI: false } }];
-const vrs = $('Load Candidate Descriptions').first().json.valueRanges || [];
-const descriptions = {};
-P.descJobIds.forEach((id, i) => { descriptions[id] = (((vrs[i] || {}).values || [])[0] || [])[0] || ''; });
-const resumeText = str($('Extract Resume Text').first().json.text);
-const candidates = P.aiCandidates.map(c => ({ job: { jobid: c.jobid, title: c.title, company: c.company }, needsScore: c.needsScore }));
-return [{ json: { needsAI: true, aiPrompt: buildAiPrompt({ candidates, resumeText, descriptions }) } }];`, { libs: ['ai'] }), 2120, 100);
-  const needsAi = wf.add(iff('Needs AI?', '$json.needsAI === true'), 2340, 100);
-  const llm = wf.add({
-    name: 'Score & Pitch (AI)', type: '@n8n/n8n-nodes-langchain.chainLlm', typeVersion: 1.4,
-    parameters: { promptType: 'define', text: '={{ $json.aiPrompt }}' }, retryOnFail: true, maxTries: 3, waitBetweenTries: 5000, onError: 'continueRegularOutput',
-  }, 2560, 0);
-  const model = wf.add({
-    name: 'Gemini', type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini', typeVersion: 1, parameters: { options: {} },
-    credentials: CRED.gemini, retryOnFail: true, maxTries: 3, waitBetweenTries: 5000, onError: 'continueRegularOutput',
-  }, 2560, 220);
-  const parseAi = wf.add(code('Parse AI', `return [{ json: parseAiResponse($input.first().json) }];`, { libs: ['ai'] }), 2780, 0);
   const plan = wf.add(code('Plan', `
 const P = ${P};
-const db = rangesByTab($('Load Outreach DB').first().json);
+const db = rangesByTab($('Load DB').first().json);
 const contactsT = parseTable(db['Contacts']), outreachT = parseTable(db['Outreach']), logT = parseTable(db['Mail Log']), tplT = parseTable(db['Outreach Templates']);
-const jh = rangesByTab($('Load Job Headers').first().json);
 const jobs = columnsToRows(P.jobNames, $('Load Job Columns').first().json.valueRanges);
-const companyIndex = buildCompanyIndex(parseTable(jh['Companies']).rows);
+const companyIndex = buildCompanyIndex(parseTable(db['Companies']).rows);
 const S = $('Sync Replies').first().json;
-const ai = $('Parse AI').isExecuted ? $('Parse AI').first().json : { scores: {}, pitches: {} };
 const res = planOutreach({
   cfg: P.cfg, today: P.today, nowTs: P.nowTs, contacts: contactsT.rows, outreach: outreachT.rows, mailLog: logT.rows, jobs,
-  templates: loadTemplates(tplT.rows), companyIndex, ai,
+  templates: loadTemplates(tplT.rows), companyIndex,
   sync: { outreachChanges: new Map(S.outreachChanges), contactChanges: new Map(S.contactChanges), events: S.events },
 });
 const missing = new Set();
-const outreachData = [];
-for (const w of res.outreachWrites) if (w._row) outreachData.push(...cellWrites('Outreach', outreachT.headers, w._row, w.fields, missing));
-for (const w of res.contactWrites) if (w._row) outreachData.push(...cellWrites('Contacts', contactsT.headers, w._row, w.fields, missing));
+const data = [];
+for (const w of res.outreachWrites) if (w._row) data.push(...cellWrites('Outreach', outreachT.headers, w._row, w.fields, missing));
+for (const w of res.contactWrites) if (w._row) data.push(...cellWrites('Contacts', contactsT.headers, w._row, w.fields, missing));
+// Job statuses are only written once outreach is real (DRY_RUN keeps jobs untouched).
+// Outside the send window a DRAFT/SEND run only previews: nothing would go
+// out, so no job may be marked (PICKED would consume it and start the cooldown).
+const windowClosed = P.mode !== 'DRY_RUN' && gateItem({ cfg: P.cfg, now: new Date() }).skip;
+if (windowClosed && res.queue.length) res.digest.alerts.unshift('Outside the send window (' + cfgStr(P.cfg, 'sendWindowStart', '09:00') + '–' + cfgStr(P.cfg, 'sendWindowEnd', '12:30') +
+  ' IST): nothing was sent and no job was marked, this was a preview. The 09:30 weekday run sends it. To send now, set ignoreSendWindow = Y in Outreach Config.');
+const jobHeader = ((db['Result'] || [])[0] || []).map(str);
+if (P.mode !== 'DRY_RUN' && !windowClosed) for (const w of res.jobWrites) data.push(...cellWrites('Result', jobHeader, w._row, w.fields, missing));
 const cfgRows = db['Outreach Config'] || [];
 const at = cfgRows.findIndex((r, i) => i > 0 && str(r[0]) === 'lastPlanAt');
-outreachData.push(at > 0 ? { range: "'Outreach Config'!B" + (at + 1), values: [[P.nowTs]] } : { range: "'Outreach Config'!A1:C1", values: [HEADERS['Outreach Config']] });
-const jobHeader = ((jh['Result'] || [])[0] || []).map(str);
-const jobsData = P.mode === 'DRY_RUN' ? [] : res.jobWrites.flatMap(w => cellWrites('Result', jobHeader, w._row, w.fields, missing));
-if (!jobsData.length) jobsData.push({ range: "'Result'!" + P.jobCols.outreachStatus + '1', values: [['outreachStatus']] });
+data.push(at > 0 ? { range: "'Outreach Config'!B" + (at + 1), values: [[P.nowTs]] } : { range: "'Outreach Config'!A1:C1", values: [HEADERS['Outreach Config']] });
 const planRows = res.queue.map(q => [P.today, q.order, q.kind, q.templateCode, q.company, q.recruiterName, q.to, q.jobId, q.role, q.score,
-  q.outreachId, q.stepAfter, q.subject || '(reply on thread)', String(q.body).slice(0, 400), P.mode === 'DRY_RUN' ? 'dry run' : '']);
+  q.outreachId, q.stepAfter, q.subject || '(reply on thread)', String(q.body).slice(0, 400), P.mode === 'DRY_RUN' ? 'dry run' : (gateItem({ cfg: P.cfg, now: new Date() }).skip ? 'preview: outside send window' : '')]);
 const planData = [{ range: "'Outreach Plan'!A1:O1", values: [HEADERS['Outreach Plan']] }];
 if (planRows.length) planData.push({ range: "'Outreach Plan'!A2:O" + (planRows.length + 1), values: planRows });
 if (missing.size) res.digest.alerts.push('Columns missing in the sheets: ' + [...missing].join(', ') + ' (run Outreach - Setup)');
-return [{ json: { mode: P.mode, sending: P.mode !== 'DRY_RUN' && res.sendDay && res.queue.length > 0, queue: res.queue, digest: res.digest, outreachData, jobsData, planData } }];`, { libs: ['planner', 'schema'] }), 3000, 100);
-  wf.chain(syncNode, loadDesc, dl, b64, extract, prepAi, needsAi);
-  wf.link(needsAi, llm, 0); wf.link(needsAi, plan, 1);
-  wf.link(model, llm, 0, 'ai_languageModel');
-  wf.chain(llm, parseAi, plan);
+return [{ json: { mode: P.mode, windowClosed, sending: P.mode !== 'DRY_RUN' && !windowClosed && res.sendDay && res.queue.length > 0, queue: res.queue, digest: res.digest, data, planData } }];`, { libs: ['planner', 'schema', 'send'] }), 3000, 100);
+  wf.chain(syncNode, dl, b64, plan);
 
-  const wOut = wf.add(batchUpdate('Write Outreach DB', OUT, "$('Plan').first().json.outreachData"), 3220, 100);
-  const wJobs = wf.add(batchUpdate('Write Job Statuses', JOBS, "$('Plan').first().json.jobsData"), 3440, 100);
-  const clear = wf.add(http('Clear Plan Tab', { method: 'POST', url: `${L.sheetsUrl(OUT)}/values/${encodeURIComponent("'Outreach Plan'!A2:O")}:clear`, body: '{}' }), 3660, 100);
-  const wPlan = wf.add(batchUpdate('Write Plan Tab', OUT, "$('Plan').first().json.planData"), 3880, 100);
+  const wState = wf.add(batchUpdate('Write State', DB, "$('Plan').first().json.data"), 3330, 100);
+  const clear = wf.add(http('Clear Plan Tab', { method: 'POST', url: `${L.sheetsUrl(DB)}/values/${encodeURIComponent("'Outreach Plan'!A2:O")}:clear`, body: '{}' }), 3660, 100);
+  const wPlan = wf.add(batchUpdate('Write Plan Tab', DB, "$('Plan').first().json.planData"), 3880, 100);
   const sendToday = wf.add(iff('Send Today?', "$('Plan').first().json.sending === true"), 4100, 100);
-  wf.chain(plan, wOut, wJobs, clear, wPlan, sendToday);
+  wf.chain(plan, wState, clear, wPlan, sendToday);
 
   const queue = wf.add(code('Queue Items', `return $('Plan').first().json.queue.map(q => ({ json: q }));`), 4320, 0);
   const loop = wf.add({ name: 'Loop Over Mails', type: 'n8n-nodes-base.splitInBatches', typeVersion: 3, parameters: { batchSize: 1, options: {} } }, 4540, 0);
@@ -323,7 +299,7 @@ const vr = rangesByTab($json);
 const r = recordMail({ item, response: $('Gmail API').item.json, mode: item.mode, now: new Date(), headers: P.headers,
   idColumns: { Outreach: vr['Outreach'], 'Mail Log': vr['Mail Log'] }, subject: item.sentSubject });
 return { json: { data: r.data, summary: { result: 'SENT', kind: item.kind, company: item.company, recruiterName: item.recruiterName, templateCode: item.templateCode, outreachId: item.outreachId, threadId: r.threadId } } };`, { libs: ['send'], each: true }), 6520, -200);
-  const wRec = wf.add(batchUpdate('Write Record', OUT, '$json.data'), 6740, -200);
+  const wRec = wf.add(batchUpdate('Write Record', DB, '$json.data'), 6740, -200);
   const sent = wf.add(code('Sent', `
 const c = ${P}.cfg;
 const lo = Number(c.jitterMinSec) || 60, hi = Math.max(lo, Number(c.jitterMaxSec) || 180);
@@ -361,37 +337,140 @@ return formatDigest({ digest: Pl.digest, results, mode: Pl.mode }).map(message =
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Outreach - Send Drafts Now: every pending outreach draft, sendNowGapMin apart
+// ═════════════════════════════════════════════════════════════════════════════
+function sendDraftsNow() {
+  const wf = new Workflow('sendNow', 'Outreach - Send Drafts Now');
+  wf.add(sticky('About', '## Outreach - Send Drafts Now\nRun manually after reviewing the drafts. Sends **every Gmail draft whose subject contains `sendNowSubjectContains`** ("Serving Notice Period") **plus every draft the daily run logged in Mail Log**, starting now, one every **sendNowGapMin (2)** minutes.\n\n- Gmail search picks the drafts; each subject is checked again right before sending\n- If a sent draft was made by the daily run, its Mail Log row and the follow-up clock are updated\n- Telegram summary at the end', 560, 300), -900, -420);
+  const trig = wf.add(manual('Send all drafts now'), -900, 100);
+  const load = wf.add(http('Load DB', { url: dbRanges(['Outreach Config', 'Mail Log', 'Outreach']) }), -680, 100);
+  const prep = wf.add(code('Prepare', `
+const db = rangesByTab($input.first().json);
+const cfg = parseConfig(db['Outreach Config']);
+const logT = parseTable(db['Mail Log']), outT = parseTable(db['Outreach']);
+return [{ json: { cfg, listUrl: sendNowListUrl(cfg), phrase: sendNowPhrase(cfg), gapSec: Math.round(cfgNum(cfg, 'sendNowGapMin', 2) * 60),
+  chatId: cfgStr(cfg, 'telegramChatId', '${DEFAULT_CHAT}'), logHeaders: logT.headers, outHeaders: outT.headers,
+  mailLog: logT.rows.filter(l => str(l.mode).toUpperCase() === 'DRAFT' && !str(l.deliveredAt)),
+  outreach: outT.rows.map(o => ({ _row: o._row, outreachId: str(o.outreachId), step: o.step, threadId: str(o.threadId), state: str(o.state) })) } }];`, { libs: ['drafts'] }), -460, 100);
+  const list = wf.add(http('Find Drafts', { url: "={{ $('Prepare').first().json.listUrl }}", cred: 'gmail' }), -240, 100);
+  const items = wf.add(code('Draft Items', `
+const P = $('Prepare').first().json;
+// drafts with the phrase (Gmail search, newest first) + drafts the daily run logged
+const logged = loggedDraftIds(P.mailLog);
+const ids = [...new Set([...($input.first().json.drafts || []).slice().reverse().map(d => String(d.id)), ...logged])];
+if (!ids.length) return [{ json: { none: true } }];
+return ids.map((id, i) => ({ json: { draftId: id, logged: logged.includes(id), index: i, total: ids.length, waitSec: i === ids.length - 1 ? 1 : P.gapSec } }));`, { libs: ['drafts'] }), -20, 100);
+  const any = wf.add(iff('Any Drafts?', '$json.none !== true'), 200, 100);
+  const loop = wf.add({ name: 'Loop Over Drafts', type: 'n8n-nodes-base.splitInBatches', typeVersion: 3, parameters: { batchSize: 1, options: {} } }, 420, 100);
+  const get = wf.add(http('Get Draft', { url: `=${LIST_GMAIL}/drafts/{{ $json.draftId }}?format=metadata&metadataHeaders=Subject&metadataHeaders=To`, cred: 'gmail', onError: 'continueRegularOutput' }), 640, 0);
+  const check = wf.add(code('Check Subject', `
+const P = $('Prepare').first().json;
+const it = $('Loop Over Drafts').item.json;
+const d = inspectDraft($json, P.cfg, it.logged);
+const who = d.to || 'unknown recipient';
+if (!d.ok) return { json: { ...it, result: 'SKIPPED', who, subject: d.subject, note: $json.error ? 'draft no longer in Gmail' : 'subject does not contain "' + P.phrase + '"' } };
+return { json: { ...it, who, subject: d.subject, threadId: d.threadId } };`, { libs: ['drafts'], each: true }), 860, 0);
+  const ok = wf.add(iff('Send It?', '!$json.result'), 1080, 0);
+  const send = wf.add(http('Send Draft', { method: 'POST', url: `${LIST_GMAIL}/drafts/send`, cred: 'gmail', body: '={{ JSON.stringify({ id: $json.draftId }) }}', retry: false, onError: 'continueErrorOutput' }), 1300, -100);
+  // success (output 0) and failure (output 1) both land here; $json.error tells them apart
+  const rec = wf.add(code('Record', `
+const P = $('Prepare').first().json;
+const it = $('Check Subject').item.json;
+const now = new Date();
+const row = mailLogRowForDraft(P.mailLog, it.draftId, it.threadId);
+const o = row ? P.outreach.find(x => x.outreachId === str(row.outreachId)) || null : null;
+if ($json.error) {
+  const f = draftFailure({ error: $json.error, now });
+  const data = row && f.log.delivery ? cellWrites('Mail Log', P.logHeaders, row._row, f.log) : [];
+  return { json: { data, result: 'FAILED', who: it.who, subject: it.subject, waitSec: 1, note: f.log.note } };
+}
+let data = [];
+if (row) {
+  const r = recordDraftDelivery({ row, o, response: $json, now, cfg: P.cfg });
+  data = cellWrites('Mail Log', P.logHeaders, row._row, r.log).concat(o && r.outreachFields ? cellWrites('Outreach', P.outHeaders, o._row, r.outreachFields) : []);
+}
+return { json: { data, result: 'SENT', who: it.who, subject: it.subject, waitSec: it.waitSec, note: row ? '' : 'not in Mail Log' } };`, { libs: ['drafts'], each: true }), 1520, -100);
+  const hasData = wf.add(iff('Log It?', '$json.data.length > 0'), 1740, -100);
+  const write = wf.add(batchUpdate('Write Mail Log', DB, "$('Record').item.json.data"), 1960, -200);
+  const pass = wf.add(code('Result', `const r = $('Record').item.json;
+return { json: { result: r.result, who: r.who, subject: r.subject, waitSec: r.waitSec, note: r.note } };`, { each: true }), 2180, -100);
+  const gap = wf.add({ name: 'Gap', type: 'n8n-nodes-base.wait', typeVersion: 1.1, webhookId: uuid('send-now-gap'), parameters: { amount: '={{ $json.waitSec }}', unit: 'seconds' } }, 2400, -100);
+  const summary = wf.add(code('Summary', `
+const P = $('Prepare').first().json;
+const res = $('Loop Over Drafts').isExecuted ? $input.all().map(i => i.json).filter(r => r && r.result) : [];
+const sent = res.filter(r => r.result === 'SENT'), failed = res.filter(r => r.result === 'FAILED'), skipped = res.filter(r => r.result === 'SKIPPED');
+const L = [];
+L.push(sent.length ? '📤 Sent ' + sent.length + ' draft' + (sent.length > 1 ? 's' : '') + ', ' + Math.round(P.gapSec / 60) + ' min apart.'
+  : '📤 No outreach drafts to send (none from the daily run, none with "' + P.phrase + '" in the subject).');
+sent.forEach(r => L.push('• ' + r.who + (r.note ? ' (' + r.note + ')' : '')));
+failed.forEach(r => L.push('❌ Failed: ' + r.who + ' (' + r.note + ')'));
+if (skipped.length) L.push('Skipped: ' + skipped.map(r => r.who + ' (' + r.note + ')').join(', '));
+return [{ json: { message: L.join('\\n') } }];`), 640, 300);
+  const tg = wf.add(telegram('Send Summary', "$('Prepare').first().json.chatId"), 860, 300);
+  wf.chain(trig, load, prep, list, items, any);
+  wf.link(any, loop, 0); wf.link(any, summary, 1);
+  wf.link(loop, summary, 0); wf.link(loop, get, 1);
+  wf.chain(get, check, ok);
+  wf.link(ok, send, 0); wf.link(ok, loop, 1);
+  wf.link(send, rec, 0); wf.link(send, rec, 1);
+  wf.chain(rec, hasData);
+  wf.link(hasData, write, 0); wf.link(hasData, pass, 1); wf.link(write, pass);
+  wf.chain(pass, gap, loop);
+  wf.chain(summary, tg);
+  return wf;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WF-3  Outreach - Reply Sync (hourly)
 // ═════════════════════════════════════════════════════════════════════════════
 function replySync() {
   const wf = new Workflow('sync', 'Outreach - Reply Sync');
-  wf.add(sticky('About', '## Outreach - Reply Sync\nHourly at :15. Finds replies, bounces and out-of-office mail on tracked threads.\n\n- Reply → REPLIED, no more mail, Telegram alert\n- Bounce → BOUNCED + Contacts.emailStatus = BOUNCED\n- Out of office → thread paused (oooPauseDays)\n\nThe daily run repeats this right before planning, and re-checks each thread again right before sending.', 460, 300), -900, -400);
+  wf.add(sticky('About', '## Outreach - Reply Sync\nHourly at :15.\n\n**Replies:** reply → REPLIED + Telegram alert · bounce → BOUNCED + Contacts.emailStatus = BOUNCED · out of office → thread paused (oooPauseDays)\n\n**Drafts (DRAFT mode):** a pipeline draft no longer in Gmail is either found sent (logged as SENT, follow-up clock from the real send) or was deleted → DISCARDED and rolled back to retry: a first email makes the recruiter fresh again, a follow-up is due again next business day. Drafts still in Gmail are left alone. Skipped if the draft list is incomplete.\n\nThe daily run repeats the reply check before planning and right before sending.', 520, 360), -900, -440);
   const t1 = wf.add(cron('Hourly at :15', '15 * * * *'), -900, 0);
   const t2 = wf.add(manual(), -900, 200);
-  const loadDb = wf.add(http('Load Outreach DB', { url: outreachRanges(['Outreach Config', 'Contacts', 'Outreach']) }), -680, 100);
+  const loadDb = wf.add(http('Load DB', { url: dbRanges(['Outreach Config', 'Contacts', 'Outreach', 'Mail Log']) }), -680, 100);
   const parse = wf.add(code('Parse DB', `${parseDbCommon}
 if (!str(cfg.setupCompletedAt) || !str(cfg.myEmail)) return [];
 return [{ json: { cfg, today, nowTs, recentUrl, bounceUrl } }];`), -460, 100);
   wf.link(t1, loadDb); wf.link(t2, loadDb); wf.link(loadDb, parse);
   const syncNode = addSyncNodes(wf, -240, 100, parse);
+  const listDrafts = wf.add(http('List Gmail Drafts', { url: `${LIST_GMAIL}/drafts?maxResults=500`, cred: 'gmail', onError: 'continueRegularOutput', executeOnce: true }), 960, 100);
+  const missing = wf.add(code('Missing Drafts', `
+const db = rangesByTab($('Load DB').first().json);
+const ids = missingDraftThreads({ mailLog: parseTable(db['Mail Log']).rows, drafts: $('List Gmail Drafts').first().json });
+return ids.length ? ids.map(threadId => ({ json: { threadId } })) : [{ json: { threadId: '' } }];`, { libs: ['drafts'] }), 1180, 100);
+  const anyMissing = wf.add(iff('Any Missing Drafts?', '!!$json.threadId'), 1400, 100);
+  const draftThreads = wf.add(http('Get Draft Threads', { url: `=${LIST_GMAIL}/threads/{{ $json.threadId }}?format=metadata&metadataHeaders=From`, cred: 'gmail', onError: 'continueRegularOutput' }), 1620, 0);
   const apply = wf.add(code('Apply Sync', `
 const P = ${P};
-const db = rangesByTab($('Load Outreach DB').first().json);
+const db = rangesByTab($('Load DB').first().json);
 const S = $('Sync Replies').first().json;
-const outreachT = parseTable(db['Outreach']), contactsT = parseTable(db['Contacts']);
+const outreachT = parseTable(db['Outreach']), contactsT = parseTable(db['Contacts']), logT = parseTable(db['Mail Log']);
+const data = [];
+// 1. drafts: deleted → DISCARDED + rollback, found sent → SENT
+let note = '';
+if (logT.headers.includes('delivery')) {
+  const threads = $('Get Draft Threads').isExecuted ? $('Get Draft Threads').all().map(i => i.json).filter(t => t && Array.isArray(t.messages)) : [];
+  const r = reconcileDrafts({ mailLog: logT.rows, outreach: outreachT.rows, drafts: $('List Gmail Drafts').first().json, threads, now: new Date(), cfg: P.cfg });
+  for (const u of r.logUpdates) data.push(...cellWrites('Mail Log', logT.headers, u._row, u.fields));
+  for (const u of r.outreachUpdates) data.push(...cellWrites('Outreach', outreachT.headers, u._row, u.fields));
+  note = formatReconcileNote(r);
+}
+// 2. replies / bounces / out of office (written after, so they win)
 const oRow = new Map(outreachT.rows.map(o => [str(o.outreachId), o._row]));
 const cRow = new Map(contactsT.rows.map(c => [str(c.recruiterId), c._row]));
-const data = [];
 for (const [id, f] of S.outreachChanges) if (oRow.get(id)) data.push(...cellWrites('Outreach', outreachT.headers, oRow.get(id), f));
 for (const [rid, f] of S.contactChanges) if (cRow.get(rid)) data.push(...cellWrites('Contacts', contactsT.headers, cRow.get(rid), f));
 const cfgRows = db['Outreach Config'] || [];
 const at = cfgRows.findIndex((r, i) => i > 0 && str(r[0]) === 'lastSyncAt');
 data.push(at > 0 ? { range: "'Outreach Config'!B" + (at + 1), values: [[P.nowTs]] } : { range: "'Outreach Config'!A1:C1", values: [HEADERS['Outreach Config']] });
-return [{ json: { data, messages: formatSyncAlert(S.events) } }];`, { libs: ['util', 'schema', 'digest'] }), 960, 100);
-  const write = wf.add(batchUpdate('Write Sync', OUT, '$json.data'), 1180, 100);
-  const alerts = wf.add(code('Sync Alerts', `return $('Apply Sync').first().json.messages.map(message => ({ json: { message } }));`), 1400, 100);
-  const tg = wf.add(telegram('Send Reply Alert', `${P}.cfg.telegramChatId || '${DEFAULT_CHAT}'`), 1620, 100);
-  wf.chain(syncNode, apply, write, alerts, tg);
+return [{ json: { data, messages: formatSyncAlert(S.events).concat(note ? [note] : []) } }];`, { libs: ['util', 'schema', 'digest', 'drafts'] }), 1840, 100);
+  const write = wf.add(batchUpdate('Write Sync', DB, '$json.data'), 2060, 100);
+  const alerts = wf.add(code('Sync Alerts', `return $('Apply Sync').first().json.messages.map(message => ({ json: { message } }));`), 2280, 100);
+  const tg = wf.add(telegram('Send Reply Alert', `${P}.cfg.telegramChatId || '${DEFAULT_CHAT}'`), 2500, 100);
+  wf.chain(syncNode, listDrafts, missing, anyMissing);
+  wf.link(anyMissing, draftThreads, 0); wf.link(anyMissing, apply, 1); wf.link(draftThreads, apply);
+  wf.chain(apply, write, alerts, tg);
   return wf;
 }
 
@@ -400,71 +479,95 @@ return [{ json: { data, messages: formatSyncAlert(S.events) } }];`, { libs: ['ut
 // ═════════════════════════════════════════════════════════════════════════════
 function enrichment() {
   const wf = new Workflow('enrich', 'Outreach - Contact Enrichment');
-  wf.add(sticky('About', '## Outreach - Contact Enrichment\nHourly at :45.\n\n1. Contacts hygiene: recruiterId, companyId (Companies + Aliases), duplicates by LinkedIn URL / email\n2. Poll pending FullEnrich batches → email + emailStatus\n3. Submit relevant contacts (isRelevant = Y, no email) to FullEnrich\n\n**Setup:** create a *Header Auth* credential named **FullEnrich API** with header `Authorization` = `Bearer <your key>` and select it on both FullEnrich nodes.', 520, 320), -900, -420);
-  const t1 = wf.add(cron('Hourly at :45', '45 * * * *'), -900, 0);
+  wf.add(sticky('About', '## Outreach - Contact Enrichment\nEvery 15 minutes. Add a row with just a **LinkedIn URL** (a name is optional) and one run does it all:\n1. Hygiene: recruiterId (replaces anything typed by hand), isRelevant (defaultRelevant), source, addedAt, companyId, duplicates\n2. Submit new rows to FullEnrich → mark them PENDING with the enrichmentId\n3. Wait 20 s and poll every pending enrichment, repeating while FullEnrich is still working (enrichPollRounds)\n4. Write name, title, company, companyId (LinkedIn company id), email, emailStatus\n\n**Credential:** a *Bearer Auth* credential whose token is just the FullEnrich API key.', 560, 360), -900, -460);
+  const t1 = wf.add(cron('Every 15 minutes', '*/15 * * * *'), -900, 0);
   const t2 = wf.add(manual(), -900, 200);
-  const loadDb = wf.add(http('Load Outreach DB', { url: outreachRanges(['Outreach Config', 'Contacts']) }), -680, 100);
-  const loadComp = wf.add(http('Load Companies', { url: L.sheetsBatchGetUrl(JOBS, ["'Companies'!A:Z"]) }), -460, 100);
+  const loadDb = wf.add(http('Load DB', { url: dbRanges(['Outreach Config', 'Contacts', 'Companies', 'Outreach']) }), -680, 100);
   const prep = wf.add(code('Prepare Enrichment', `
 const now = new Date(), nowTs = istTsStr(now);
-const db = rangesByTab($('Load Outreach DB').first().json);
+const db = rangesByTab($('Load DB').first().json);
 const cfg = parseConfig(db['Outreach Config']);
-if (!str(cfg.setupCompletedAt)) return [];
+if (!str(cfg.setupCompletedAt)) throw new Error('Outreach Config.setupCompletedAt is empty: run "Outreach - Setup (run once)" first.');
 const contactsT = parseTable(db['Contacts']);
-const companyIndex = buildCompanyIndex(parseTable(rangesByTab($('Load Companies').first().json)['Companies']).rows);
-const p = prepareEnrichment({ contacts: contactsT.rows, companyIndex, cfg, nowTs });
+const companyIndex = buildCompanyIndex(parseTable(db['Companies']).rows);
+const referencedIds = parseTable(db['Outreach']).rows.map(o => str(o.recruiterId)).filter(Boolean);
+const p = prepareEnrichment({ contacts: contactsT.rows, companyIndex, cfg, nowTs, referencedIds });
 const data = p.updates.flatMap(u => cellWrites('Contacts', contactsT.headers, u._row, u.fields));
 const cfgRows = db['Outreach Config'] || [];
 const at = cfgRows.findIndex((r, i) => i > 0 && str(r[0]) === 'lastEnrichAt');
 data.push(at > 0 ? { range: "'Outreach Config'!B" + (at + 1), values: [[nowTs]] } : { range: "'Outreach Config'!A1:C1", values: [HEADERS['Outreach Config']] });
-return [{ json: { cfg, nowTs, hour: istParts(now).hh, data, submit: p.submit, submitIds: p.submitIds, pollIds: p.pollIds, alerts: p.alerts, hygiene: p.updates.length } }];`, { libs: ['enrich', 'schema'] }), -240, 100);
-  const wHyg = wf.add(batchUpdate('Write Contact Hygiene', OUT, '$json.data'), -20, 100);
+return [{ json: { cfg, nowTs, hour: istParts(now).hh, minute: istParts(now).mi, headers: contactsT.headers, data, submit: p.submit, submitIds: p.submitIds,
+  submitRows: p.submitRows, pollIds: p.pollIds, alerts: p.alerts, hygiene: p.updates.length } }];`, { libs: ['enrich', 'schema'] }), -460, 100);
+  const wHyg = wf.add(batchUpdate('Write Contact Hygiene', DB, "$('Prepare Enrichment').first().json.data"), -240, 100);
+
+  // 1. submit new rows and mark them PENDING right away
+  const hasSubmit = wf.add(iff('Submit New?', "!!$('Prepare Enrichment').first().json.submit"), -20, 100);
+  const submit = wf.add(http('Submit To FullEnrich', {
+    method: 'POST', url: 'https://app.fullenrich.com/api/v1/contact/enrich/bulk', cred: 'fullenrich', retry: false, onError: 'continueRegularOutput',
+    body: "={{ JSON.stringify($('Prepare Enrichment').first().json.submit) }}",
+  }), 200, 0);
+  const mark = wf.add(code('Mark Submitted', `
+const P = $('Prepare Enrichment').first().json;
+const r = markSubmitted({ response: $json, submitIds: P.submitIds, contacts: P.submitRows, nowTs: P.nowTs });
+const data = r.updates.flatMap(u => cellWrites('Contacts', P.headers, u._row, u.fields));
+if (!data.length) data.push({ range: "'Contacts'!A1:" + colLetter(P.headers.length - 1) + '1', values: [P.headers] });
+return [{ json: { data, submitted: r.updates.length, enrichmentId: r.enrichmentId || '', alerts: r.alerts } }];`, { libs: ['enrich'] }), 420, 0);
+  const wSub = wf.add(batchUpdate('Write Submitted', DB, '$json.data'), 640, 0);
+  const firstWait = wf.add({ name: 'Give FullEnrich Time', type: 'n8n-nodes-base.wait', typeVersion: 1.1, webhookId: uuid('enrich-wait-1'), parameters: { amount: 20, unit: 'seconds' } }, 860, 0);
+
+  // 2. poll everything pending (older batches + the one just submitted)
   const poll = wf.add(code('Poll Items', `
-const ids = $('Prepare Enrichment').first().json.pollIds;
-return ids.length ? ids.map(enrichmentId => ({ json: { enrichmentId } })) : [{ json: { enrichmentId: '' } }];`), 200, 100);
-  const hasPoll = wf.add(iff('Anything Pending?', '!!$json.enrichmentId'), 420, 100);
-  const getRes = wf.add(http('Get Enrichment Result', { url: '=https://app.fullenrich.com/api/v1/contact/enrich/bulk/{{ $json.enrichmentId }}', cred: 'fullenrich', retry: false, onError: 'continueRegularOutput' }), 640, 0);
-  const reread = wf.add(http('Re-read Contacts', { url: outreachRanges(['Contacts']), executeOnce: true }), 860, 100);
+const P = $('Prepare Enrichment').first().json;
+const fresh = $('Mark Submitted').isExecuted ? $('Mark Submitted').first().json.enrichmentId : '';
+const ids = [...new Set([...P.pollIds, fresh].filter(Boolean))];
+return ids.length ? ids.map(enrichmentId => ({ json: { enrichmentId } })) : [{ json: { enrichmentId: '' } }];`), 1080, 100);
+  const hasPoll = wf.add(iff('Anything Pending?', '!!$json.enrichmentId'), 1300, 100);
+  const getRes = wf.add(http('Get Enrichment Result', { url: '=https://app.fullenrich.com/api/v1/contact/enrich/bulk/{{ $json.enrichmentId }}', cred: 'fullenrich', retry: false, onError: 'continueRegularOutput' }), 1520, 0);
+  const check = wf.add(code('Still Running?', `
+const P = $('Prepare Enrichment').first().json;
+const rounds = cfgNum(P.cfg, 'enrichPollRounds', 6);
+const running = $input.all().map(i => i.json).filter(enrichmentInProgress).length;
+return [{ json: { running, round: $runIndex + 1, again: running > 0 && $runIndex + 1 < rounds } }];`, { libs: ['enrich'] }), 1740, 0);
+  const again = wf.add(iff('Wait And Poll Again?', '$json.again === true'), 1960, 0);
+  const pollWait = wf.add({ name: 'Wait 20s', type: 'n8n-nodes-base.wait', typeVersion: 1.1, webhookId: uuid('enrich-wait-2'), parameters: { amount: 20, unit: 'seconds' } }, 2180, -120);
+
+  // 3. write results onto the rows (fresh read: hygiene and PENDING writes are in)
+  const reread = wf.add(http('Re-read Contacts', { url: dbRanges(['Contacts']), executeOnce: true }), 2180, 100);
   const apply = wf.add(code('Apply Results', `
 const P = $('Prepare Enrichment').first().json;
 const contactsT = parseTable(rangesByTab($('Re-read Contacts').first().json)['Contacts']);
 const results = $('Get Enrichment Result').isExecuted ? $('Get Enrichment Result').all().map(i => i.json) : [];
-const r = applyEnrichmentResults({ results, contacts: contactsT.rows, nowTs: P.nowTs });
+const companyIndex = buildCompanyIndex(parseTable(rangesByTab($('Load DB').first().json)['Companies']).rows);
+const r = applyEnrichmentResults({ results, contacts: contactsT.rows, nowTs: istTsStr(new Date()), companyIndex });
 const data = r.updates.flatMap(u => cellWrites('Contacts', contactsT.headers, u._row, u.fields));
 if (!data.length) data.push({ range: "'Contacts'!A1:" + colLetter(contactsT.headers.length - 1) + '1', values: [contactsT.headers] });
-return [{ json: { data, found: r.found, notFound: r.notFound, alerts: r.alerts } }];`, { libs: ['enrich'] }), 1080, 100);
-  const wRes = wf.add(batchUpdate('Write Results', OUT, '$json.data'), 1300, 100);
-  const hasSubmit = wf.add(iff('Submit New?', "!!$('Prepare Enrichment').first().json.submit"), 1520, 100);
-  const submit = wf.add(http('Submit To FullEnrich', {
-    method: 'POST', url: 'https://app.fullenrich.com/api/v1/contact/enrich/bulk', cred: 'fullenrich', retry: false, onError: 'continueRegularOutput',
-    body: "={{ JSON.stringify($('Prepare Enrichment').first().json.submit) }}",
-  }), 1740, 0);
-  const mark = wf.add(code('Mark Submitted', `
-const P = $('Prepare Enrichment').first().json;
-const contactsT = parseTable(rangesByTab($('Re-read Contacts').first().json)['Contacts']);
-const r = markSubmitted({ response: $json, submitIds: P.submitIds, contacts: contactsT.rows, nowTs: P.nowTs });
-const data = r.updates.flatMap(u => cellWrites('Contacts', contactsT.headers, u._row, u.fields));
-if (!data.length) data.push({ range: "'Contacts'!A1:" + colLetter(contactsT.headers.length - 1) + '1', values: [contactsT.headers] });
-return [{ json: { data, submitted: r.updates.length, alerts: r.alerts } }];`, { libs: ['enrich'] }), 1960, 0);
-  const wSub = wf.add(batchUpdate('Write Submitted', OUT, '$json.data'), 2180, 0);
+const stillRunning = results.filter(enrichmentInProgress).length;
+return [{ json: { data, found: r.found, notFound: r.notFound, stillRunning, alerts: r.alerts } }];`, { libs: ['enrich'] }), 2400, 100);
+  const wRes = wf.add(batchUpdate('Write Results', DB, '$json.data'), 2620, 100);
   const summary = wf.add(code('Enrichment Summary', `
 const P = $('Prepare Enrichment').first().json;
 const A = $('Apply Results').first().json;
 const M = $('Mark Submitted').isExecuted ? $('Mark Submitted').first().json : { submitted: 0, alerts: [] };
 const news = A.found + A.notFound + M.submitted > 0 || A.alerts.length + M.alerts.length > 0;
+const morning = P.hour === 9 && P.minute < 15; // data-quality reminders once a day
 const lines = [];
 if (M.submitted) lines.push('🔍 Sent ' + M.submitted + ' recruiters to FullEnrich.');
 if (A.found || A.notFound) lines.push('📇 FullEnrich results: ' + A.found + ' emails found, ' + A.notFound + ' not found.');
+if (A.stillRunning) lines.push('⏳ ' + A.stillRunning + ' enrichment(s) still running at FullEnrich, picked up on the next run.');
 [...A.alerts, ...M.alerts].forEach(a => lines.push('⚠️ ' + a));
-if ((news || P.hour === 9) && P.alerts.length) { lines.push('Contacts that need attention:'); P.alerts.slice(0, 15).forEach(a => lines.push('• ' + a)); }
-return lines.length && (news || P.hour === 9) ? [{ json: { message: lines.join('\\n') } }] : [];`), 2400, 100);
-  const tg = wf.add(telegram('Send Enrichment Note', `$('Prepare Enrichment').first().json.cfg.telegramChatId || '${DEFAULT_CHAT}'`), 2620, 100);
+if ((news || morning) && P.alerts.length) { lines.push('Contacts that need attention:'); P.alerts.slice(0, 15).forEach(a => lines.push('• ' + a)); }
+return lines.length && (news || morning) ? [{ json: { message: lines.join('\\n') } }] : [];`), 2840, 100);
+  const tg = wf.add(telegram('Send Enrichment Note', `$('Prepare Enrichment').first().json.cfg.telegramChatId || '${DEFAULT_CHAT}'`), 3060, 100);
+
   wf.link(t1, loadDb); wf.link(t2, loadDb);
-  wf.chain(loadDb, loadComp, prep, wHyg, poll, hasPoll);
-  wf.link(hasPoll, getRes, 0); wf.link(hasPoll, reread, 1); wf.link(getRes, reread);
-  wf.chain(reread, apply, wRes, hasSubmit);
-  wf.link(hasSubmit, submit, 0); wf.link(hasSubmit, summary, 1);
-  wf.chain(submit, mark, wSub, summary, tg);
+  wf.chain(loadDb, prep, wHyg, hasSubmit);
+  wf.link(hasSubmit, submit, 0); wf.link(hasSubmit, poll, 1);
+  wf.chain(submit, mark, wSub, firstWait, poll, hasPoll);
+  wf.link(hasPoll, getRes, 0); wf.link(hasPoll, reread, 1);
+  wf.chain(getRes, check, again);
+  wf.link(again, pollWait, 0); wf.link(again, reread, 1);
+  wf.link(pollWait, poll);
+  wf.chain(reread, apply, wRes, summary, tg);
   return wf;
 }
 
@@ -480,16 +583,15 @@ const m = $json.message || {};
 const parsed = parseCommand(m.text);
 if (!parsed) return [];
 return [{ json: { parsed, chatId: String((m.chat && m.chat.id) || '') } }];`, { libs: ['commands'] }), -480, 100);
-  const loadCfg = wf.add(http('Load Config', { url: outreachRanges(['Outreach Config']) }), -260, 100);
-  const loadHdr = wf.add(http('Load Result Header', { url: L.sheetsBatchGetUrl(JOBS, ["'Result'!1:1"]) }), -40, 100);
+  const loadDb = wf.add(http('Load DB', { url: dbRanges(['Outreach Config', "'Result'!1:1"]) }), -150, 100);
   const cols = wf.add(code('Result Columns', `
 const header = ((rangesByTab($input.first().json)['Result'] || [])[0] || []).map(str);
 const names = ['jobid', 'title', 'company', 'isPriority', 'outreachStatus', 'outreachAt', 'applied'].filter(n => header.includes(n));
-return [{ json: { header, names, url: sheetsBatchGetUrl(SHEETS.jobsDb, names.map(n => "'Result'!" + colLetter(header.indexOf(n)) + ':' + colLetter(header.indexOf(n)))) } }];`, { libs: ['util', 'schema'] }), 180, 100);
+return [{ json: { header, names, url: sheetsBatchGetUrl(SHEETS.db, names.map(n => "'Result'!" + colLetter(header.indexOf(n)) + ':' + colLetter(header.indexOf(n)))) } }];`, { libs: ['util', 'schema'] }), 180, 100);
   const loadCols = wf.add(http('Load Result Columns', { url: '={{ $json.url }}' }), 400, 100);
   const apply = wf.add(code('Apply Command', `
 const P = $('Parse Command').first().json;
-const cfg = parseConfig(rangesByTab($('Load Config').first().json)['Outreach Config']);
+const cfg = parseConfig(rangesByTab($('Load DB').first().json)['Outreach Config']);
 if (str(cfg.telegramChatId) && str(cfg.telegramChatId) !== P.chatId) return [];
 const R = $('Result Columns').first().json;
 const jobs = columnsToRows(R.names, $('Load Result Columns').first().json.valueRanges);
@@ -498,11 +600,11 @@ const r = applyCommand(P.parsed, job);
 const data = r.fields && job ? cellWrites('Result', R.header, job._row, r.fields) : [];
 if (!data.length) data.push({ range: "'Result'!A1", values: [[R.header[0] || 'title']] });
 return [{ json: { data, message: r.reply, chatId: P.chatId } }];`, { libs: ['commands'] }), 620, 100);
-  const write = wf.add(batchUpdate('Write Command', JOBS, '$json.data'), 840, 100);
+  const write = wf.add(batchUpdate('Write Command', DB, '$json.data'), 840, 100);
   const tg = wf.add(telegram('Reply', "$('Apply Command').first().json.chatId"), 1060, 100);
   // Reply needs the message from Apply Command, not the Sheets response.
-  wf.nodes.find(n => n.name === 'Reply').parameters.text = "={{ $('Apply Command').first().json.message }}";
-  wf.chain(trig, parse, loadCfg, loadHdr, cols, loadCols, apply, write, tg);
+  wf.nodes.find(n => n.name === 'Reply').parameters.text = TG_TEXT("$('Apply Command').first().json.message");
+  wf.chain(trig, parse, loadDb, cols, loadCols, apply, write, tg);
   return wf;
 }
 
@@ -526,61 +628,56 @@ return [{ json: { message: msg } }];`), 220, 0);
 // ═════════════════════════════════════════════════════════════════════════════
 function setup() {
   const wf = new Workflow('setup', 'Outreach - Setup (run once)');
-  wf.add(sticky('About', '## Outreach - Setup\nRun manually once. Safe to re-run.\n\n- Creates Contacts, Outreach, Mail Log, Outreach Templates, Outreach Config, Outreach Plan tabs in **Switch Contacts**\n- Adds companyId / isPriority / outreachStatus / outreachAt / applied to **Result**, companyId to **Low Match**, Aliases to **Companies**\n- Seeds config (mode = DRY_RUN) and 6 templates\n- First run only: marks every existing job LEGACY and imports the Cold Mailing tab (reads each Gmail thread for the real mail count and replies)', 520, 320), -900, -420);
+  wf.add(sticky('About', '## Outreach - Setup\nRun manually once. Safe to re-run. Everything lives in **n8n - Switch**.\n\n- Creates Contacts, Outreach, Mail Log, Outreach Templates, Outreach Config, Outreach Plan tabs\n- Adds companyId / isPriority / outreachStatus / outreachAt / applied to **Result**, companyId to **Low Match**, Aliases to **Companies**\n- Seeds config (mode = DRY_RUN) and 6 templates\n- First run only: marks every existing job LEGACY and copies the old Cold Mailing recruiters (Switch Contacts, read-only) into Contacts as LEGACY with hold = Y. Gmail is not read.', 520, 320), -900, -420);
   const trig = wf.add(manual('Run setup'), -900, 100);
   const profile = wf.add(http('Gmail Profile', { url: `${LIST_GMAIL}/profile`, cred: 'gmail' }), -680, 100);
-  const infoOut = wf.add(http('Outreach Sheet Info', { url: `${L.sheetsUrl(OUT)}?fields=sheets.properties.title` }), -460, 100);
-  const infoJobs = wf.add(http('Jobs Sheet Info', { url: `${L.sheetsUrl(JOBS)}?fields=sheets.properties.title` }), -240, 100);
+  const info = wf.add(http('Sheet Info', { url: `${L.sheetsUrl(DB)}?fields=sheets.properties.title` }), -460, 100);
+  const legacyInfo = wf.add(http('Legacy Sheet Info', { url: `${L.sheetsUrl(LEGACY)}?fields=sheets.properties.title`, retry: false, onError: 'continueRegularOutput' }), -240, 100);
   const tabsPlan = wf.add(code('Tabs Plan', `
 const titles = r => ((r && r.sheets) || []).map(s => s.properties.title);
-const outTitles = titles($('Outreach Sheet Info').first().json), jobTitles = titles($('Jobs Sheet Info').first().json);
-for (const t of ['Result', 'Companies']) if (!jobTitles.includes(t)) throw new Error('"n8n - Switch" has no ' + t + ' tab');
-const add = missingTabs(outTitles);
-const readTabs = Object.keys(HEADERS).concat(outTitles.includes('Cold Mailing') ? ['Cold Mailing'] : []);
+const have = titles($('Sheet Info').first().json);
+for (const t of ['Result', 'Companies']) if (!have.includes(t)) throw new Error('"n8n - Switch" has no ' + t + ' tab');
+const add = missingTabs(have);
+const read = Object.keys(HEADERS).map(t => quoteTab(t) + '!A:Z').concat(["'Result'!1:1", "'Companies'!A:Z"], have.includes('Low Match') ? ["'Low Match'!1:1"] : []);
+const legacyTabs = titles($('Legacy Sheet Info').first().json);
 return [{ json: {
   add, requests: add.map(title => ({ addSheet: { properties: { title } } })),
-  readUrl: sheetsBatchGetUrl(SHEETS.outreachDb, readTabs.map(t => quoteTab(t) + '!A:Z')),
-  jobsHeaderUrl: sheetsBatchGetUrl(SHEETS.jobsDb, ["'Result'!1:1", "'Companies'!A:Z"].concat(jobTitles.includes('Low Match') ? ["'Low Match'!1:1"] : [])),
+  readUrl: sheetsBatchGetUrl(SHEETS.db, read),
+  legacyUrl: legacyTabs.includes('Cold Mailing') ? sheetsBatchGetUrl(SHEETS.legacy, ["'Cold Mailing'!A:Z"]) : '',
 } }];`, { libs: ['setup'] }), -20, 100);
   const needAdd = wf.add(iff('Tabs Missing?', '$json.add.length > 0'), 200, 100);
-  const addTabs = wf.add(http('Create Tabs', { method: 'POST', url: `${L.sheetsUrl(OUT)}:batchUpdate`, body: "={{ JSON.stringify({ requests: $('Tabs Plan').first().json.requests }) }}", retry: false }), 420, 0);
-  const readOut = wf.add(http('Read Outreach Tabs', { url: "={{ $('Tabs Plan').first().json.readUrl }}", executeOnce: true }), 640, 100);
-  const readHdr = wf.add(http('Read Job Headers', { url: "={{ $('Tabs Plan').first().json.jobsHeaderUrl }}" }), 860, 100);
+  const addTabs = wf.add(http('Create Tabs', { method: 'POST', url: `${L.sheetsUrl(DB)}:batchUpdate`, body: "={{ JSON.stringify({ requests: $('Tabs Plan').first().json.requests }) }}", retry: false }), 420, 0);
+  const readTabs = wf.add(http('Read Tabs', { url: "={{ $('Tabs Plan').first().json.readUrl }}", executeOnce: true }), 640, 100);
   const resCols = wf.add(code('Result Columns', `
 const header = ((rangesByTab($input.first().json)['Result'] || [])[0] || []).map(str);
 const names = ['jobid', 'company', 'outreachStatus'].filter(n => header.includes(n));
 if (!names.includes('jobid')) throw new Error('Result tab has no jobid column');
-return [{ json: { names, url: sheetsBatchGetUrl(SHEETS.jobsDb, names.map(n => "'Result'!" + colLetter(header.indexOf(n)) + ':' + colLetter(header.indexOf(n)))) } }];`, { libs: ['util', 'schema'] }), 1080, 100);
-  const readCols = wf.add(http('Read Result Columns', { url: '={{ $json.url }}' }), 1300, 100);
-  const threads = wf.add(code('Threads To Inspect', `
-const ids = coldMailingThreadIds(rangesByTab($('Read Outreach Tabs').first().json));
-return ids.length ? ids.map(threadId => ({ json: { threadId } })) : [{ json: { threadId: '' } }];`, { libs: ['setup'] }), 1520, 100);
-  const anyThreads = wf.add(iff('Any Threads?', '!!$json.threadId'), 1740, 100);
-  const getThread = wf.add(http('Get Thread', { url: THREAD_URL('$json.threadId'), cred: 'gmail', onError: 'continueRegularOutput' }), 1960, 0);
+return [{ json: { names, url: sheetsBatchGetUrl(SHEETS.db, names.map(n => "'Result'!" + colLetter(header.indexOf(n)) + ':' + colLetter(header.indexOf(n)))) } }];`, { libs: ['util', 'schema'] }), 860, 100);
+  const readCols = wf.add(http('Read Result Columns', { url: '={{ $json.url }}' }), 1080, 100);
+  const hasLegacy = wf.add(iff('Legacy Tab?', "!!$('Tabs Plan').first().json.legacyUrl"), 1300, 100);
+  const readCold = wf.add(http('Read Cold Mailing', { url: "={{ $('Tabs Plan').first().json.legacyUrl }}", onError: 'continueRegularOutput' }), 1520, 0);
   const build = wf.add(code('Build Setup', `
-const tabs = rangesByTab($('Read Outreach Tabs').first().json);
-const jh = rangesByTab($('Read Job Headers').first().json);
+const tabs = rangesByTab($('Read Tabs').first().json);
 const rc = $('Result Columns').first().json;
 const vrs = $('Read Result Columns').first().json.valueRanges || [];
 const colOf = n => { const i = rc.names.indexOf(n); return i < 0 ? [] : ((vrs[i] || {}).values || []); };
-const threads = $('Get Thread').isExecuted ? $('Get Thread').all().map(i => i.json).filter(t => t && Array.isArray(t.messages)) : [];
+const coldMailing = $('Read Cold Mailing').isExecuted ? (rangesByTab($('Read Cold Mailing').first().json)['Cold Mailing'] || []) : [];
 const s = planSetup({
-  tabs, threads, myEmail: str($('Gmail Profile').first().json.emailAddress), now: new Date(),
-  jobs: { resultHeader: (jh['Result'] || [])[0] || [], lowMatchHeader: (jh['Low Match'] || [])[0] || [], companies: jh['Companies'] || [],
+  tabs, coldMailing, myEmail: str($('Gmail Profile').first().json.emailAddress), now: new Date(),
+  jobs: { resultHeader: (tabs['Result'] || [])[0] || [], lowMatchHeader: (tabs['Low Match'] || [])[0] || [], companies: tabs['Companies'] || [],
           jobIdCol: colOf('jobid'), companyCol: colOf('company'), statusCol: colOf('outreachStatus') },
 });
-return [{ json: s }];`, { libs: ['setup'] }), 2180, 100);
-  const wOut = wf.add(batchUpdate('Write Outreach Sheet', OUT, "$('Build Setup').first().json.outreachData"), 2400, 100);
-  const wJobs = wf.add(batchUpdate('Write Jobs Sheet', JOBS, "$('Build Setup').first().json.jobsData"), 2620, 100);
+return [{ json: s }];`, { libs: ['setup'] }), 1740, 100);
+  const write = wf.add(batchUpdate('Write Setup', DB, "$('Build Setup').first().json.data"), 1960, 100);
   const sum = wf.add(code('Setup Summary', `
 const s = $('Build Setup').first().json;
-return [{ json: { message: '🛠 Outreach setup\\n' + s.summary.map(x => '• ' + x).join('\\n') + '\\n\\nNext: review the Outreach Templates tab, then activate Reply Sync, Contact Enrichment, Daily Run and Telegram Commands.' } }];`), 2840, 100);
-  const tg = wf.add(telegram('Send Summary', `'${DEFAULT_CHAT}'`), 3060, 100);
-  wf.chain(trig, profile, infoOut, infoJobs, tabsPlan, needAdd);
-  wf.link(needAdd, addTabs, 0); wf.link(needAdd, readOut, 1); wf.link(addTabs, readOut);
-  wf.chain(readOut, readHdr, resCols, readCols, threads, anyThreads);
-  wf.link(anyThreads, getThread, 0); wf.link(anyThreads, build, 1); wf.link(getThread, build);
-  wf.chain(build, wOut, wJobs, sum, tg);
+return [{ json: { message: '🛠 Outreach setup\\n' + s.summary.map(x => '• ' + x).join('\\n') + '\\n\\nNext: review the Outreach Templates tab, then activate Reply Sync, Contact Enrichment, Daily Run and Telegram Commands.' } }];`), 2180, 100);
+  const tg = wf.add(telegram('Send Summary', `'${DEFAULT_CHAT}'`), 2400, 100);
+  wf.chain(trig, profile, info, legacyInfo, tabsPlan, needAdd);
+  wf.link(needAdd, addTabs, 0); wf.link(needAdd, readTabs, 1); wf.link(addTabs, readTabs);
+  wf.chain(readTabs, resCols, readCols, hasLegacy);
+  wf.link(hasLegacy, readCold, 0); wf.link(hasLegacy, build, 1); wf.link(readCold, build);
+  wf.chain(build, write, sum, tg);
   return wf;
 }
 
@@ -607,12 +704,17 @@ function patchScraper() {
   }
   pas.parameters.jsCode = js;
 
+  // Map columns by header name ("Map Automatically"). The manual mapping keeps
+  // a snapshot of the sheet's columns, and n8n refuses to write ("Column names
+  // were updated after the node's setup") whenever the sheet changes, e.g. when
+  // setup adds outreach columns or you add your own. Auto-mapping writes each
+  // item field to the column with the same header, leaves other columns
+  // (isPriority, outreachStatus, ...) untouched and ignores fields with no
+  // column (highMatch, scoreSummary).
   for (const name of ['Save All to Sheet', 'Save Low Match']) {
-    const cols = node(name).parameters.columns;
-    cols.value.companyId = '={{ $json.companyId }}';
-    if (!cols.schema.some(s => s.id === 'companyId')) {
-      cols.schema.push({ id: 'companyId', displayName: 'companyId', required: false, defaultMatch: false, display: true, type: 'string', canBeUsedToMatch: true });
-    }
+    const p = node(name).parameters;
+    p.columns = { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['jobid'], schema: [], attemptToConvertTypes: false, convertFieldsToString: false };
+    p.options = { ...(p.options || {}), handlingExtraData: 'ignoreIt' };
   }
 
   const fs = node('Format Summary');
@@ -632,7 +734,7 @@ function patchScraper() {
 }
 
 // ── write everything ───────────────────────────────────────────────────────
-const outputs = [setup(), enrichment(), replySync(), dailyRun(), commands(), errorAlert()];
+const outputs = [setup(), enrichment(), replySync(), dailyRun(), sendDraftsNow(), commands(), errorAlert()];
 for (const wf of outputs) {
   const file = join(ROOT, `${wf.name.replace(/[^\w -]+/g, '').replace(/\s+/g, ' ').trim()}.json`);
   writeFileSync(file, JSON.stringify(wf.toJSON(), null, 2) + '\n');
